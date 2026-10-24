@@ -26,6 +26,7 @@ Prior art: Tristan's personal Obsidian vault + `/t-*` commands (ticket notes wit
 - No embeddings / semantic search.
 - No multi-team tenancy: one Hive instance serves one context repo.
 - No GitHub, Jira, or Rollbar integration in v1 (phased in after; see Roadmap).
+- No sharing with teammates in v1: it runs locally, used by Tristan only, to dogfood. Sharing is roadmap phase 1.
 
 ## Anti-goals (failure even if it technically works)
 
@@ -47,6 +48,9 @@ Prior art: Tristan's personal Obsidian vault + `/t-*` commands (ticket notes wit
 - **Hosting:** one small container, or local run for the first spike.
 - **Scope order:** shared context + workflow first; integrations one at a time after.
 - **Today's finish line:** approved design + tickets filed. Building happens on later days.
+- **v1 runs locally, single user (Tristan).** Teammate access (hosting with HTTPS, context repo pushed to GitHub) is the first phase after the GitHub remote exists.
+- **Direct edits allowed.** People may edit the context repo directly (e.g. in Obsidian). Before each write, Hive commits any uncommitted changes in the context repo as "manual edits" so nothing is lost.
+- **Seed the workflow from Tristan's vault.** `workflow/` starts with Hive versions of `/t-start`, `/t-new`, `/t-work`, `/t-end` (one migration ticket). Existing project notes stay in the vault.
 
 ## Builder's calls (made by Claude, Tristan may override)
 
@@ -55,19 +59,23 @@ Prior art: Tristan's personal Obsidian vault + `/t-*` commands (ticket notes wit
   - `tickets/<KEY>-###.md` — ticket notes. Frontmatter: `title`, `status` (`todo|in-progress|in-review|done|blocked`), `assignee`, `links` (list of context paths).
   - `specs/`, `decisions/`, `sessions/` — free markdown.
 - **What an agent knows when starting a ticket:** the shared workflow, the ticket note, and every spec/decision listed in the ticket's `links`. Delivered by a `start-ticket` workflow prompt that tells the agent to read those.
-- **MCP tools v1:** `hive_list(dir)`, `hive_read(path)`, `hive_search(query)`, `hive_write(path, content, message)`. Paths are relative to the context repo root; any path escaping the root, or into `.git/`, is rejected.
-- **MCP prompts v1:** one per `workflow/*.md`, re-read from disk on every request (no cache), so edits take effect immediately.
-- **Writes:** `hive_write` writes the file and makes one git commit, author = token's developer. Writes are serialized with one in-process lock (fine for a small team). Workflow edits go through the same tool — direct commit, revert via git if needed.
-- **Config (env):** `HIVE_CONTEXT_DIR` (path to the context repo clone), `HIVE_TOKENS` (JSON map `token -> {name, email}`), `PORT`.
+- **MCP tools v1:** `hive_list(dir)`, `hive_read(path)` (returns content + a version hash), `hive_search(query)`, `hive_write(path, content, message, base?)`, `hive_delete(path, message)`, `hive_history(path)`, `hive_revert(commit)`, `hive_new_ticket(title)`, `hive_workflow(name, args)`. Paths are relative to the context repo root; any path escaping the root, or into `.git/`, is rejected.
+- **MCP prompts v1:** one per `workflow/*.md`, re-read from disk on every request, so edits take effect immediately. Stateless HTTP; a newly added workflow file appears when the client reconnects. `hive_workflow(name, args)` returns the same rendered text, as a fallback for clients with weak MCP prompt support.
+- **Workflow file format:** frontmatter `description` and optional `arguments:` (list of `{name, description, required}`); body uses `{{name}}` placeholders. Example: `start-ticket` takes `key`.
+- **Writes:** every write/delete/revert makes one git commit, author = token's developer. Writes are serialized with one in-process lock (fine for a small team). If `base` is given and the file changed since that version, the write is rejected. Creating a file with no `base` fails if the file already exists.
+- **Ticket numbers:** `hive_new_ticket` assigns the next `<KEY>-###` under the write lock (KEY from env `HIVE_TICKET_KEY`), so two agents cannot get the same number.
+- **PR to ticket link (v1):** branch names start with the ticket key (e.g. `HIVE-012-thing`); the agent reads the key from the branch. GitHub-level linking is roadmap.
+- **Config (env):** `HIVE_CONTEXT_DIR` (path to the context repo clone), `HIVE_TOKENS` (JSON map `token -> {name, email}`), `HIVE_TICKET_KEY`, `PORT`.
 - **Push/pull of the context repo** to a remote: out of v1 (no remote yet). Added when the GitHub remote exists.
 - **Package manager / tests:** yarn, vitest. Node 22.
 - **Repo layout:** single package, `src/` — no monorepo.
 
 ## Roadmap after v1 (each its own phase)
 
-1. **GitHub:** read issues, CI/CD (Actions) results, and PRs; post PR code review using the linked spec/decisions; create issues.
-2. **Jira:** read who is working on what and ticket progress; move tickets.
-3. **Rollbar → ticket flow:** agent sees a Rollbar error → checks whether it is a code bug fixable in code → creates a GitHub issue → reports to a human and asks whether to create a ticket → on approval, marks "ticket creation in progress" in shared state (so other agents don't duplicate) → creates the ticket → removes the issue → normal ticket cycle. Needs an atomic lock; git can't do this safely, so this phase adds a small SQLite table for locks.
+1. **Share:** host Hive (container + HTTPS), push the context repo to its GitHub remote after each commit, onboard teammates with tokens.
+2. **GitHub:** read issues, CI/CD (Actions) results, and PRs; post PR code review using the linked spec/decisions; create issues.
+3. **Jira:** read who is working on what and ticket progress; move tickets.
+4. **Rollbar → ticket flow:** agent sees a Rollbar error → checks whether it is a code bug fixable in code → creates a GitHub issue → reports to a human and asks whether to create a ticket → on approval, marks "ticket creation in progress" in shared state (so other agents don't duplicate) → creates the ticket → removes the issue → normal ticket cycle. Needs an atomic lock; git can't do this safely, so this phase adds a small SQLite table for locks.
 
 ## Left to the builder
 
