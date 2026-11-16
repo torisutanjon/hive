@@ -3,8 +3,10 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { authenticate } from './auth.ts';
 import type { Config } from './config.ts';
 import { createMcpServer } from './mcp.ts';
+import { createRepo } from './repo.ts';
 
 export function createHiveServer(config: Config): Server {
+  const repo = createRepo(config.contextDir);
   return createServer(async (req, res) => {
     if (req.headers.origin) {
       res.writeHead(403, { 'Content-Type': 'application/json' });
@@ -27,7 +29,7 @@ export function createHiveServer(config: Config): Server {
       res.end('{"error":"method not allowed"}');
       return;
     }
-    const mcp = createMcpServer(config.contextDir);
+    const mcp = createMcpServer(config.contextDir, repo);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     res.on('close', () => {
       void transport.close();
