@@ -12,6 +12,6 @@ try {
   throw e;
 }
 
-createHiveServer(config.developers).listen(config.port, '127.0.0.1', () =>
+createHiveServer(config).listen(config.port, '127.0.0.1', () =>
   console.log(`hive listening on http://127.0.0.1:${config.port}`),
 );

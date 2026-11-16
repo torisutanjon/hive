@@ -1,16 +1,17 @@
 import { createServer, type Server } from 'node:http';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { authenticate, type DeveloperTable } from './auth.ts';
+import { authenticate } from './auth.ts';
+import type { Config } from './config.ts';
 import { createMcpServer } from './mcp.ts';
 
-export function createHiveServer(developers: DeveloperTable): Server {
+export function createHiveServer(config: Config): Server {
   return createServer(async (req, res) => {
     if (req.headers.origin) {
       res.writeHead(403, { 'Content-Type': 'application/json' });
       res.end('{"error":"forbidden"}');
       return;
     }
-    const dev = authenticate(req.headers.authorization, developers);
+    const dev = authenticate(req.headers.authorization, config.developers);
     if (!dev) {
       res.writeHead(401, { 'Content-Type': 'application/json', 'WWW-Authenticate': 'Bearer' });
       res.end('{"error":"unauthorized"}');
@@ -26,7 +27,7 @@ export function createHiveServer(developers: DeveloperTable): Server {
       res.end('{"error":"method not allowed"}');
       return;
     }
-    const mcp = createMcpServer();
+    const mcp = createMcpServer(config.contextDir);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     res.on('close', () => {
       void transport.close();
