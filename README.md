@@ -85,25 +85,25 @@ Never commit a real token to a repo.
 | Tool | Purpose |
 | --- | --- |
 | `hive_whoami` | Show who you are authenticated as. |
-| `hive_list(dir?)` | List files in the context repo. |
+| `hive_list(dir?)` | List one folder of the context repo (default: root). |
 | `hive_read(path)` | Read a file. Returns `{content, version}`. |
-| `hive_search(query)` | Search file contents. |
-| `hive_write(path, content, message, base?)` | Write a file and commit it. Omit `base` to create; pass `version` to overwrite. |
+| `hive_search(query)` | Case-insensitive text search over the markdown files (up to 50 matches). |
+| `hive_write(path, content, message, base?)` | Write a file as one commit by you. Omit `base` to create; to overwrite, pass `base` = the `version` from `hive_read` (rejected if the file changed since). |
 | `hive_delete(path, message)` | Delete a file and commit it. |
 | `hive_history(path?, limit?)` | Show commit history, for one file or the whole repo. |
-| `hive_revert(commit)` | Revert a commit. |
-| `hive_new_ticket(title)` | Create the next numbered ticket. |
-| `hive_workflow(name, args?)` | Fetch a workflow prompt. |
+| `hive_revert(commit)` | Undo a commit with a revert commit by you; fails without changes on conflict. |
+| `hive_new_ticket(title)` | Create the next `KEY-###` ticket; numbers are never reused. |
+| `hive_workflow(name, args?)` | Render a workflow prompt as text, for clients without prompt support. |
 
 ## Workflow
 
 The seeded prompts:
 
-- `start`: begin a session.
-- `new {title}`: file a new ticket.
-- `work {key}`: work a ticket.
-- `end`: end the session and write the note.
-- `start-ticket {key}`: begin a session on a specific ticket.
+- `start`: list tickets by status and recap the last session.
+- `new {title}`: draft a ticket with you, then file it.
+- `work {key}`: work a ticket end to end (goal, approach, failing test, build, verify, review), then stop before pushing.
+- `end`: draft today's session note and save it on approval.
+- `start-ticket {key}`: load the ticket, its linked specs and decisions, and project settings (read only).
 
 They are plain markdown in `workflow/` of the context repo. Edits apply on the next request; new files appear after the client reconnects. `project.md` holds `base_branch`, `verify` and `commit_format` for the `work` workflow.
 
