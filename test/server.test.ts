@@ -28,8 +28,23 @@ test('unknown token → identical 401', async () => {
   expect(await res.text()).toBe('{"error":"unauthorized"}');
 });
 
-test('valid token → 200 developer', async () => {
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${TOKEN}` } });
-  expect(res.status).toBe(200);
-  expect(await res.json()).toEqual({ name: 'Ada', email: 'ada@example.com' });
+const auth = { Authorization: `Bearer ${TOKEN}` };
+
+test('valid token, GET / → 404', async () => {
+  const res = await fetch(url, { headers: auth });
+  expect(res.status).toBe(404);
+});
+
+test('valid token, GET /mcp → 405 Allow: POST', async () => {
+  const res = await fetch(`${url}mcp`, { headers: auth });
+  expect(res.status).toBe(405);
+  expect(res.headers.get('allow')).toBe('POST');
+});
+
+test('Origin header → 403', async () => {
+  const res = await fetch(`${url}mcp`, {
+    method: 'POST',
+    headers: { ...auth, Origin: 'http://evil.example' },
+  });
+  expect(res.status).toBe(403);
 });
