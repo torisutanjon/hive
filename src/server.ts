@@ -29,7 +29,7 @@ export function createHiveServer(config: Config): Server {
       res.end('{"error":"method not allowed"}');
       return;
     }
-    const mcp = createMcpServer(config.contextDir, repo);
+    const mcp = createMcpServer(config.contextDir, repo, config.ticketKey);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     res.on('close', () => {
       void transport.close();

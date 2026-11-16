@@ -228,3 +228,30 @@ test('hive_history ../x is a safe tool error', async () => {
   expect(r.isError).toBe(true);
   expect(r.text).not.toContain(contextDir);
 });
+
+test('listTools includes hive_new_ticket', async () => {
+  const client = new Client({ name: 'test', version: '0.0.0' });
+  await client.connect(transport(true));
+  try {
+    const names = (await client.listTools()).tools.map((t) => t.name);
+    expect(names).toContain('hive_new_ticket');
+  } finally {
+    await client.close();
+  }
+});
+
+test('hive_new_ticket creates the note', async () => {
+  const r = await call('hive_new_ticket', { title: 'From MCP' });
+  expect(r.isError).toBeFalsy();
+  const t = JSON.parse(r.text) as { key: string; path: string };
+  expect(t.key).toMatch(/^HIVE-\d{3}$/);
+  expect(t.path).toBe(`tickets/${t.key}.md`);
+  const read = JSON.parse((await call('hive_read', { path: t.path })).text) as { content: string };
+  expect(read.content).toContain('title: "From MCP"');
+});
+
+test('hive_new_ticket empty title is a tool error', async () => {
+  const r = await call('hive_new_ticket', { title: '' });
+  expect(r.isError).toBe(true);
+  expect(r.text).toMatch(/title/);
+});
