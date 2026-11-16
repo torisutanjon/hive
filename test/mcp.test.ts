@@ -18,6 +18,7 @@ const g = (...args: string[]): string => execFileSync('git', args, { cwd: contex
 const WF_HEAD = '---\ndescription: Start work on a ticket\narguments:\n  - name: key\n    description: Ticket key\n    required: true\n---\n';
 mkdirSync(join(contextDir, 'workflow'));
 writeFileSync(join(contextDir, 'workflow/start-ticket.md'), WF_HEAD + 'Read tickets/{{key}}.md first.\n');
+writeFileSync(join(contextDir, 'workflow/hello.md'), '---\ndescription: Say hello\n---\nHello from Hive.\n');
 g('init', '-q');
 g('add', '-A');
 g('-c', 'user.name=Seed', '-c', 'user.email=seed@x', '-c', 'commit.gpgsign=false', 'commit', '-qm', 'init');
@@ -121,7 +122,7 @@ test('hive_read returns content and version', async () => {
 });
 
 test('hive_search finds the line', async () => {
-  const r = await call('hive_search', { query: 'hello' });
+  const r = await call('hive_search', { query: 'hello world' });
   expect(JSON.parse(r.text)).toEqual([{ path: 'notes/a.md', line: 1, text: 'Hello World' }]);
 });
 
@@ -306,4 +307,28 @@ test('workflow edits on disk apply to a new client', async () => {
   writeFileSync(join(contextDir, 'workflow/start-ticket.md'), WF_HEAD + 'Changed {{key}}.\n');
   const r = await withClient((c) => c.getPrompt({ name: 'start-ticket', arguments: { key: 'HIVE-001' } }));
   expect(r.messages[0]?.content).toMatchObject({ text: 'Changed HIVE-001.\n' });
+});
+
+const HELLO = 'Hello from Hive.\n';
+
+test('zero-arg workflow is listed without arguments', async () => {
+  const { prompts } = await withClient((c) => c.listPrompts());
+  const p = prompts.find((x) => x.name === 'hello');
+  expect(p).toBeDefined();
+  expect((p?.arguments ?? []).length).toBe(0);
+});
+
+test('zero-arg getPrompt works with no arguments key', async () => {
+  const r = await withClient((c) => c.getPrompt({ name: 'hello' }));
+  expect(r.messages[0]?.content).toMatchObject({ text: HELLO });
+});
+
+test('zero-arg getPrompt works with empty arguments', async () => {
+  const r = await withClient((c) => c.getPrompt({ name: 'hello', arguments: {} }));
+  expect(r.messages[0]?.content).toMatchObject({ text: HELLO });
+});
+
+test('zero-arg hive_workflow', async () => {
+  const r = await withClient((c) => c.callTool({ name: 'hive_workflow', arguments: { name: 'hello' } }));
+  expect((r.content as { text: string }[])[0]?.text).toBe(HELLO);
 });
