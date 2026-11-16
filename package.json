@@ -10,7 +10,8 @@
     "type-check": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run",
-    "start": "node src/index.ts"
+    "start": "node src/index.ts",
+    "seed": "node src/seed.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
