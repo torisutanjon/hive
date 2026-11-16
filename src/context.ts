@@ -16,6 +16,9 @@ function outside(root: string, abs: string): boolean {
   return r === '..' || r.startsWith('..' + sep) || isAbsolute(r);
 }
 
+/** NTFS ignores case, so `.GIT` is `.git`. */
+const isGit = (s: string): boolean => s.toLowerCase() === '.git';
+
 function code(e: unknown): string | undefined {
   return (e as NodeJS.ErrnoException).code;
 }
@@ -24,7 +27,7 @@ export async function resolveSafe(root: string, rel: string): Promise<string> {
   if (rel.includes('\0') || isAbsolute(rel)) throw new ContextError('path outside the context repo');
   const abs = resolve(root, rel);
   if (outside(root, abs)) throw new ContextError('path outside the context repo');
-  if (relative(root, abs).split(sep).includes('.git')) {
+  if (relative(root, abs).split(sep).some(isGit)) {
     throw new ContextError('path inside .git is not allowed');
   }
   let real: string;
@@ -49,7 +52,7 @@ export async function listDir(root: string, dir = ''): Promise<Entry[]> {
   }
   const out: Entry[] = [];
   for (const d of items) {
-    if (d.name === '.git') continue;
+    if (isGit(d.name)) continue;
     if (d.isDirectory()) out.push({ name: d.name, type: 'dir' });
     else if (d.isFile()) out.push({ name: d.name, type: 'file' });
   }
@@ -74,7 +77,7 @@ export async function readContext(
 export async function searchContext(root: string, query: string): Promise<Match[]> {
   if (!query.trim()) throw new ContextError('query must not be empty');
   const files = ((await readdir(root, { recursive: true })) as string[])
-    .filter((f) => f.endsWith('.md') && !f.split(sep).includes('.git'))
+    .filter((f) => f.endsWith('.md') && !f.split(sep).some(isGit))
     .sort();
   const q = query.toLowerCase();
   const matches: Match[] = [];
@@ -86,7 +89,14 @@ export async function searchContext(root: string, query: string): Promise<Match[
       if (e instanceof ContextError) continue; // symlink escapes
       throw e;
     }
-    const lines = (await readFile(abs, 'utf8')).split('\n');
+    let text: string;
+    try {
+      text = await readFile(abs, 'utf8');
+    } catch (e) {
+      if (code(e) === 'EISDIR') continue;
+      throw e;
+    }
+    const lines = text.split('\n');
     for (const [i, line] of lines.entries()) {
       if (!line.toLowerCase().includes(q)) continue;
       matches.push({ path: rel.split(sep).join('/'), line: i + 1, text: line.trim() });

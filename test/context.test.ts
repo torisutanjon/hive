@@ -13,6 +13,7 @@ beforeAll(() => {
   outside = mkdtempSync(join(tmpdir(), 'hive-out-'));
   mkdirSync(join(root, 'notes'));
   mkdirSync(join(root, '.git'));
+  mkdirSync(join(root, 'dir.md'));
   writeFileSync(join(root, 'notes/a.md'), 'Hello World\nsecond line\n');
   writeFileSync(join(root, 'b.md'), 'nothing here\n');
   writeFileSync(join(root, 'big.md'), 'match me\n'.repeat(60));
@@ -27,7 +28,7 @@ afterAll(() => {
 });
 
 describe('resolveSafe', () => {
-  test.each(['../x', '/etc/passwd', '.git/config', 'notes/../../x', 'escape/secret.md', 'a\0b'])(
+  test.each(['../x', '/etc/passwd', '.git/config', '.GIT/config', 'notes/.Git/x', 'notes/../../x', 'escape/secret.md', 'a\0b'])(
     'rejects %j',
     async (p) => {
       const err = await resolveSafe(root, p).catch((e: unknown) => e);
@@ -85,6 +86,10 @@ describe('searchContext', () => {
     expect(await searchContext(root, 'HELLO')).toEqual([
       { path: 'notes/a.md', line: 1, text: 'Hello World' },
     ]);
+  });
+  test('skips a directory named *.md', async () => {
+    const res = await searchContext(root, 'hello');
+    expect(res.some((m) => m.path.startsWith('dir.md'))).toBe(false);
   });
   test('caps at 50', async () => {
     expect(await searchContext(root, 'match me')).toHaveLength(50);
