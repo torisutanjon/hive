@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { Developer } from './auth.ts';
 import { ContextError, listDir, readContext, searchContext } from './context.ts';
+import type { Repo } from './repo.ts';
 
 type ToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean };
 
@@ -15,7 +16,13 @@ async function run(fn: () => Promise<unknown>): Promise<ToolResult> {
   }
 }
 
-export function createMcpServer(contextDir: string): McpServer {
+function author(extra: { authInfo?: { extra?: Record<string, unknown> } }): Developer {
+  const d = extra.authInfo?.extra?.developer as Developer | undefined;
+  if (!d) throw new ContextError('unauthenticated');
+  return d;
+}
+
+export function createMcpServer(contextDir: string, repo: Repo): McpServer {
   const server = new McpServer({ name: 'hive', version: '0.0.0' });
   server.registerTool(
     'hive_whoami',
@@ -54,6 +61,30 @@ export function createMcpServer(contextDir: string): McpServer {
       inputSchema: { query: z.string() },
     },
     ({ query }) => run(() => searchContext(contextDir, query)),
+  );
+  server.registerTool(
+    'hive_write',
+    {
+      description:
+        'Create or overwrite a file in the shared context as one git commit by you. Creating: omit base (fails if the file exists). Overwriting: pass base = the version from hive_read (fails if the file changed since). Returns {path, version, commit}.',
+      inputSchema: {
+        path: z.string(),
+        content: z.string(),
+        message: z.string(),
+        base: z.string().optional(),
+      },
+    },
+    ({ path, content, message, base }, extra) =>
+      run(() => repo.write(path, content, message, author(extra), base)),
+  );
+  server.registerTool(
+    'hive_delete',
+    {
+      description:
+        'Delete a file from the shared context as one git commit by you. Returns {path, version: null, commit}.',
+      inputSchema: { path: z.string(), message: z.string() },
+    },
+    ({ path, message }, extra) => run(() => repo.delete(path, message, author(extra))),
   );
   return server;
 }
