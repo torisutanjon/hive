@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readdir, readFile, realpath } from 'node:fs/promises';
-import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 /** Messages are safe to show clients: never include absolute paths. */
 export class ContextError extends Error {
@@ -23,13 +23,27 @@ function code(e: unknown): string | undefined {
   return (e as NodeJS.ErrnoException).code;
 }
 
-export async function resolveSafe(root: string, rel: string): Promise<string> {
+/** Shared lexical checks for both guards. */
+function lexical(root: string, rel: string): string {
   if (rel.includes('\0') || isAbsolute(rel)) throw new ContextError('path outside the context repo');
   const abs = resolve(root, rel);
   if (outside(root, abs)) throw new ContextError('path outside the context repo');
   if (relative(root, abs).split(sep).some(isGit)) {
     throw new ContextError('path inside .git is not allowed');
   }
+  return abs;
+}
+
+/** Re-check on the real path: a symlink inside the root may point outside or at .git. */
+function checkReal(realRoot: string, real: string): void {
+  if (outside(realRoot, real)) throw new ContextError('path outside the context repo');
+  if (relative(realRoot, real).split(sep).some(isGit)) {
+    throw new ContextError('path inside .git is not allowed');
+  }
+}
+
+export async function resolveSafe(root: string, rel: string): Promise<string> {
+  const abs = lexical(root, rel);
   let real: string;
   try {
     real = await realpath(abs);
@@ -37,8 +51,31 @@ export async function resolveSafe(root: string, rel: string): Promise<string> {
     if (code(e) === 'ENOENT') throw new ContextError('not found');
     throw e;
   }
-  if (outside(await realpath(root), real)) throw new ContextError('path outside the context repo');
+  checkReal(await realpath(root), real);
   return real;
+}
+
+/** Like resolveSafe but the target may not exist yet: the nearest existing ancestor is checked. */
+export async function resolveForWrite(root: string, rel: string): Promise<{ abs: string; rel: string }> {
+  const abs = lexical(root, rel);
+  if (relative(root, abs) === '') throw new ContextError('path must name a file');
+  const realRoot = await realpath(root);
+  let probe = abs;
+  const rest: string[] = [];
+  let real: string;
+  for (;;) {
+    try {
+      real = await realpath(probe);
+      break;
+    } catch (e) {
+      if (code(e) !== 'ENOENT') throw e;
+      rest.unshift(basename(probe));
+      probe = dirname(probe);
+    }
+  }
+  const target = join(real, ...rest);
+  checkReal(realRoot, target);
+  return { abs: target, rel: relative(realRoot, target).split(sep).join('/') };
 }
 
 export async function listDir(root: string, dir = ''): Promise<Entry[]> {

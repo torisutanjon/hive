@@ -1,4 +1,5 @@
 import { statSync } from 'node:fs';
+import { join } from 'node:path';
 import { buildDeveloperTable, type Developer, type DeveloperTable } from './auth.ts';
 
 export type Config = { contextDir: string; developers: DeveloperTable; ticketKey: string; port: number };
@@ -14,6 +15,8 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
   if (!contextDir) problems.push('HIVE_CONTEXT_DIR: required');
   else if (!statSync(contextDir, { throwIfNoEntry: false })?.isDirectory()) {
     problems.push('HIVE_CONTEXT_DIR: not an existing directory');
+  } else if (!statSync(join(contextDir, '.git'), { throwIfNoEntry: false })) {
+    problems.push('HIVE_CONTEXT_DIR: not a git repository (no .git)');
   }
 
   let tokens: Record<string, unknown> = {};

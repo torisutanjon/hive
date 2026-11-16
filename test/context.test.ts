@@ -21,6 +21,7 @@ beforeAll(() => {
   writeFileSync(join(root, '.git/x.md'), 'hello in git\n');
   writeFileSync(join(outside, 'secret.md'), 'hello outside\n');
   symlinkSync(outside, join(root, 'escape'));
+  symlinkSync(join(root, '.git'), join(root, 'gl'));
 });
 afterAll(() => {
   rmSync(root, { recursive: true, force: true });
@@ -28,7 +29,7 @@ afterAll(() => {
 });
 
 describe('resolveSafe', () => {
-  test.each(['../x', '/etc/passwd', '.git/config', '.GIT/config', 'notes/.Git/x', 'notes/../../x', 'escape/secret.md', 'a\0b'])(
+  test.each(['../x', '/etc/passwd', '.git/config', '.GIT/config', 'notes/.Git/x', 'notes/../../x', 'escape/secret.md', 'gl/config', 'a\0b'])(
     'rejects %j',
     async (p) => {
       const err = await resolveSafe(root, p).catch((e: unknown) => e);

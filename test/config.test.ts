@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, test } from 'vitest';
@@ -6,6 +6,7 @@ import { authenticate } from '../src/auth.ts';
 import { ConfigError, loadConfig } from '../src/config.ts';
 
 const dir = mkdtempSync(join(tmpdir(), 'hive-'));
+mkdirSync(join(dir, '.git'));
 const TOKEN = 'x'.repeat(40);
 const ada = { name: 'Ada', email: 'ada@example.com' };
 const valid = {
@@ -43,6 +44,12 @@ describe('loadConfig', () => {
 
   test('missing context dir', () => {
     expect(message({ ...valid, HIVE_CONTEXT_DIR: join(dir, 'nope') })).toContain('HIVE_CONTEXT_DIR');
+  });
+
+  test('context dir without .git', () => {
+    const m = message({ ...valid, HIVE_CONTEXT_DIR: mkdtempSync(join(tmpdir(), 'hive-nogit-')) });
+    expect(m).toContain('HIVE_CONTEXT_DIR');
+    expect(m).toContain('git');
   });
 
   test('invalid JSON never echoed', () => {
