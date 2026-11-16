@@ -4,6 +4,7 @@ import { authenticate } from './auth.ts';
 import type { Config } from './config.ts';
 import { createMcpServer } from './mcp.ts';
 import { createRepo } from './repo.ts';
+import { loadWorkflows } from './workflow.ts';
 
 export function createHiveServer(config: Config): Server {
   const repo = createRepo(config.contextDir);
@@ -29,7 +30,15 @@ export function createHiveServer(config: Config): Server {
       res.end('{"error":"method not allowed"}');
       return;
     }
-    const mcp = createMcpServer(config.contextDir, repo, config.ticketKey);
+    let workflows;
+    try {
+      workflows = await loadWorkflows(config.contextDir);
+    } catch {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end('{"error":"internal error"}');
+      return;
+    }
+    const mcp = createMcpServer(config.contextDir, repo, config.ticketKey, workflows);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     res.on('close', () => {
       void transport.close();
