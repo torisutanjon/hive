@@ -86,5 +86,23 @@ export function createMcpServer(contextDir: string, repo: Repo): McpServer {
     },
     ({ path, message }, extra) => run(() => repo.delete(path, message, author(extra))),
   );
+  server.registerTool(
+    'hive_history',
+    {
+      description:
+        'Commits that touched a path in the shared context (or the whole repo if path is omitted), newest first: [{commit, author:{name,email}, date, message}].',
+      inputSchema: { path: z.string().optional(), limit: z.number().int().min(1).max(200).optional() },
+    },
+    ({ path, limit }) => run(() => repo.history(path, limit)),
+  );
+  server.registerTool(
+    'hive_revert',
+    {
+      description:
+        'Undo a commit by adding a revert commit authored by you. Fails without changing anything if later changes conflict. Returns {reverted, commit} (commit null if there was nothing to undo).',
+      inputSchema: { commit: z.string() },
+    },
+    ({ commit }, extra) => run(() => repo.revert(commit, author(extra))),
+  );
   return server;
 }

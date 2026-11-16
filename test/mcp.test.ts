@@ -172,3 +172,59 @@ test('hive_write ../x is a safe tool error', async () => {
   expect(r.isError).toBe(true);
   expect(r.text).not.toContain(contextDir);
 });
+
+test('listTools includes history and revert', async () => {
+  const client = new Client({ name: 'test', version: '0.0.0' });
+  await client.connect(transport(true));
+  try {
+    const names = (await client.listTools()).tools.map((t) => t.name);
+    expect(names).toEqual(expect.arrayContaining(['hive_history', 'hive_revert']));
+  } finally {
+    await client.close();
+  }
+});
+
+test('history, limit validation, revert', async () => {
+  await call('hive_write', { path: 'notes/h.md', content: 'v1\n', message: 'add h' });
+  const h = JSON.parse((await call('hive_history', { path: 'notes/h.md' })).text) as {
+    commit: string;
+    author: { name: string; email: string };
+    date: string;
+    message: string;
+  }[];
+  expect(h[0]?.message).toBe('add h');
+  expect(h[0]?.author).toEqual({ name: 'Ada', email: 'ada@example.com' });
+  expect(h[0]?.commit).toMatch(/^[0-9a-f]{40}$/);
+  expect(isNaN(Date.parse(h[0]?.date ?? ''))).toBe(false);
+
+  const one = JSON.parse((await call('hive_history', { limit: 1 })).text) as unknown[];
+  expect(one).toHaveLength(1);
+  for (const limit of [0, 1.5, 500]) {
+    expect((await call('hive_history', { limit })).isError).toBe(true);
+  }
+
+  const read = JSON.parse((await call('hive_read', { path: 'notes/h.md' })).text) as { version: string };
+  const edit = JSON.parse(
+    (await call('hive_write', { path: 'notes/h.md', content: 'v2\n', message: 'edit h', base: read.version })).text,
+  ) as { commit: string };
+  const rev = JSON.parse((await call('hive_revert', { commit: edit.commit })).text) as {
+    reverted: string;
+    commit: string;
+  };
+  expect(rev.reverted).toBe(edit.commit);
+  expect(rev.commit).toMatch(/^[0-9a-f]{40}$/);
+  const after = JSON.parse((await call('hive_read', { path: 'notes/h.md' })).text) as { content: string };
+  expect(after.content).toBe('v1\n');
+});
+
+test('hive_revert malformed commit is a tool error', async () => {
+  const r = await call('hive_revert', { commit: '--abort' });
+  expect(r.isError).toBe(true);
+  expect(r.text).toMatch(/commit/);
+});
+
+test('hive_history ../x is a safe tool error', async () => {
+  const r = await call('hive_history', { path: '../x' });
+  expect(r.isError).toBe(true);
+  expect(r.text).not.toContain(contextDir);
+});
