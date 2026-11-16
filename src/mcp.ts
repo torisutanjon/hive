@@ -22,7 +22,7 @@ function author(extra: { authInfo?: { extra?: Record<string, unknown> } }): Deve
   return d;
 }
 
-export function createMcpServer(contextDir: string, repo: Repo): McpServer {
+export function createMcpServer(contextDir: string, repo: Repo, ticketKey: string): McpServer {
   const server = new McpServer({ name: 'hive', version: '0.0.0' });
   server.registerTool(
     'hive_whoami',
@@ -103,6 +103,15 @@ export function createMcpServer(contextDir: string, repo: Repo): McpServer {
       inputSchema: { commit: z.string() },
     },
     ({ commit }, extra) => run(() => repo.revert(commit, author(extra))),
+  );
+  server.registerTool(
+    'hive_new_ticket',
+    {
+      description:
+        'Create the next ticket (KEY-###) in the shared context as one commit by you. Numbers are assigned under the write lock, never reused. Returns {key, path, version, commit}.',
+      inputSchema: { title: z.string() },
+    },
+    ({ title }, extra) => run(() => repo.newTicket(ticketKey, title, author(extra))),
   );
   return server;
 }
