@@ -3,12 +3,14 @@ import { z } from 'zod';
 import type { Developer } from './auth.ts';
 import { ContextError, listDir, readContext, searchContext } from './context.ts';
 import type { Repo } from './repo.ts';
+import { loadWorkflows, render, type Workflows } from './workflow.ts';
 
 type ToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean };
 
 async function run(fn: () => Promise<unknown>): Promise<ToolResult> {
   try {
-    return { content: [{ type: 'text', text: JSON.stringify(await fn()) }] };
+    const v = await fn();
+    return { content: [{ type: 'text', text: typeof v === 'string' ? v : JSON.stringify(v) }] };
   } catch (e) {
     // raw errors may hold absolute paths: only ContextError messages are safe
     const text = e instanceof ContextError ? e.message : 'internal error';
@@ -22,7 +24,7 @@ function author(extra: { authInfo?: { extra?: Record<string, unknown> } }): Deve
   return d;
 }
 
-export function createMcpServer(contextDir: string, repo: Repo, ticketKey: string): McpServer {
+export function createMcpServer(contextDir: string, repo: Repo, ticketKey: string, workflows: Workflows): McpServer {
   const server = new McpServer({ name: 'hive', version: '0.0.0' });
   server.registerTool(
     'hive_whoami',
@@ -112,6 +114,39 @@ export function createMcpServer(contextDir: string, repo: Repo, ticketKey: strin
       inputSchema: { title: z.string() },
     },
     ({ title }, extra) => run(() => repo.newTicket(ticketKey, title, author(extra))),
+  );
+  for (const wf of workflows.valid) {
+    server.registerPrompt(
+      wf.name,
+      {
+        description: wf.description,
+        argsSchema: Object.fromEntries(
+          wf.arguments.map((a) => [a.name, (a.required ? z.string() : z.string().optional()).describe(a.description ?? a.name)]),
+        ),
+      },
+      (args) => ({
+        messages: [
+          { role: 'user', content: { type: 'text', text: render(wf, args as Record<string, string | undefined>) } },
+        ],
+      }),
+    );
+  }
+  server.registerTool(
+    'hive_workflow',
+    {
+      description:
+        'Render a shared workflow step (same text as the MCP prompt of that name). For clients without prompt support.',
+      inputSchema: { name: z.string(), args: z.record(z.string(), z.string()).optional() },
+    },
+    ({ name, args }) =>
+      run(async () => {
+        const all = await loadWorkflows(contextDir);
+        const wf = all.valid.find((w) => w.name === name);
+        if (wf) return render(wf, args ?? {});
+        const bad = all.invalid.find((w) => w.name === name);
+        if (bad) throw new ContextError(`workflow ${name} is invalid: ${bad.error}`);
+        throw new ContextError(`unknown workflow; available: ${all.valid.map((w) => w.name).join(', ') || 'none'}`);
+      }),
   );
   return server;
 }

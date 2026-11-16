@@ -15,6 +15,9 @@ const contextDir = mkdtempSync(join(tmpdir(), 'hive-mcp-'));
 mkdirSync(join(contextDir, 'notes'));
 writeFileSync(join(contextDir, 'notes/a.md'), 'Hello World\n');
 const g = (...args: string[]): string => execFileSync('git', args, { cwd: contextDir, encoding: 'utf8' }).trim();
+const WF_HEAD = '---\ndescription: Start work on a ticket\narguments:\n  - name: key\n    description: Ticket key\n    required: true\n---\n';
+mkdirSync(join(contextDir, 'workflow'));
+writeFileSync(join(contextDir, 'workflow/start-ticket.md'), WF_HEAD + 'Read tickets/{{key}}.md first.\n');
 g('init', '-q');
 g('add', '-A');
 g('-c', 'user.name=Seed', '-c', 'user.email=seed@x', '-c', 'commit.gpgsign=false', 'commit', '-qm', 'init');
@@ -254,4 +257,53 @@ test('hive_new_ticket empty title is a tool error', async () => {
   const r = await call('hive_new_ticket', { title: '' });
   expect(r.isError).toBe(true);
   expect(r.text).toMatch(/title/);
+});
+
+async function withClient<T>(fn: (c: Client) => Promise<T>): Promise<T> {
+  const client = new Client({ name: 'test', version: '0.0.0' });
+  await client.connect(transport(true));
+  try {
+    return await fn(client);
+  } finally {
+    await client.close();
+  }
+}
+
+const RENDERED = 'Read tickets/HIVE-001.md first.\n';
+
+test('listPrompts includes start-ticket', async () => {
+  const { prompts } = await withClient((c) => c.listPrompts());
+  expect(prompts.find((p) => p.name === 'start-ticket')).toMatchObject({
+    description: 'Start work on a ticket',
+    arguments: [{ name: 'key', required: true }],
+  });
+});
+
+test('getPrompt renders the workflow', async () => {
+  const r = await withClient((c) => c.getPrompt({ name: 'start-ticket', arguments: { key: 'HIVE-001' } }));
+  expect(r.messages[0]?.content).toMatchObject({ type: 'text', text: RENDERED });
+});
+
+test('hive_workflow returns identical raw text', async () => {
+  const r = await withClient((c) =>
+    c.callTool({ name: 'hive_workflow', arguments: { name: 'start-ticket', args: { key: 'HIVE-001' } } }),
+  );
+  expect(r.isError).toBeFalsy();
+  expect((r.content as { text: string }[])[0]?.text).toBe(RENDERED);
+});
+
+test('getPrompt without required arg rejects', async () => {
+  await expect(withClient((c) => c.getPrompt({ name: 'start-ticket' }))).rejects.toThrow();
+});
+
+test('hive_workflow unknown name lists available', async () => {
+  const r = await withClient((c) => c.callTool({ name: 'hive_workflow', arguments: { name: 'nope' } }));
+  expect(r.isError).toBe(true);
+  expect((r.content as { text: string }[])[0]?.text).toContain('start-ticket');
+});
+
+test('workflow edits on disk apply to a new client', async () => {
+  writeFileSync(join(contextDir, 'workflow/start-ticket.md'), WF_HEAD + 'Changed {{key}}.\n');
+  const r = await withClient((c) => c.getPrompt({ name: 'start-ticket', arguments: { key: 'HIVE-001' } }));
+  expect(r.messages[0]?.content).toMatchObject({ text: 'Changed HIVE-001.\n' });
 });
