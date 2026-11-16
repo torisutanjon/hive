@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
@@ -123,5 +123,81 @@ describe('concurrency', () => {
     await Promise.all([0, 1, 2, 3, 4].map((i) => repo.write(`c${i}.md`, `${i}\n`, `c${i}`, ada)));
     expect(g('rev-list', '--count', 'HEAD')).toBe('6');
     expect(g('status', '--porcelain')).toBe('');
+  });
+});
+
+describe('history and revert', () => {
+  const bob = { name: 'Bob', email: 'bob@example.com' };
+
+  test('history for a path', async () => {
+    await repo.write('h.md', 'v1\n', 'add h', ada);
+    await repo.write('h.md', 'v2\n', 'edit h', ada, sha('v1\n'));
+    const h = await repo.history('h.md');
+    expect(h).toHaveLength(2);
+    expect(h[0]?.message).toBe('edit h');
+    expect(h[1]?.message).toBe('add h');
+    expect(h[0]?.author).toEqual({ name: 'Ada', email: 'ada@example.com' });
+    expect(h[0]?.commit).toMatch(/^[0-9a-f]{40}$/);
+    expect(!isNaN(Date.parse(h[0]?.date ?? ''))).toBe(true);
+  });
+
+  test('history without a path ends with init', async () => {
+    await repo.write('h.md', 'v1\n', 'add h', ada);
+    const h = await repo.history();
+    expect(h[h.length - 1]?.message).toBe('init');
+  });
+
+  test('history limit', async () => {
+    await repo.write('h.md', 'v1\n', 'add h', ada);
+    expect(await repo.history(undefined, 1)).toHaveLength(1);
+  });
+
+  test('history rejects bad paths', async () => {
+    await expect(repo.history('../x')).rejects.toBeInstanceOf(ContextError);
+  });
+
+  test('history survives deletion', async () => {
+    await repo.write('h.md', 'v1\n', 'add h', ada);
+    await repo.delete('h.md', 'rm h', ada);
+    expect((await repo.history('h.md'))[0]?.message).toBe('rm h');
+  });
+
+  test('revert commits as the caller', async () => {
+    await repo.write('r.md', 'one\n', 'add r', ada);
+    const c2 = await repo.write('r.md', 'two\n', 'edit r', ada, sha('one\n'));
+    const r = await repo.revert(c2.commit as string, bob);
+    expect(readFileSync(join(root, 'r.md'), 'utf8')).toBe('one\n');
+    expect(g('log', '-1', '--format=%an|%cn|%s')).toBe('Bob|Hive|Revert "edit r"');
+    expect(r.commit).toBe(g('rev-parse', 'HEAD'));
+    expect(r.reverted).toBe(c2.commit);
+    expect((await repo.revert(c2.commit as string, bob)).commit).toBeNull();
+  });
+
+  test('malformed commit', async () => {
+    for (const c of ['--abort', 'xyz', '']) {
+      await expect(repo.revert(c, bob)).rejects.toThrow(/commit/);
+    }
+  });
+
+  test('unknown commit', async () => {
+    await expect(repo.revert('0'.repeat(40), bob)).rejects.toThrow(/unknown commit/);
+  });
+
+  test('conflict aborts cleanly', async () => {
+    await repo.write('k.md', 'a\n', 'add k', ada);
+    const k2 = await repo.write('k.md', 'b\n', 'edit k', ada, sha('a\n'));
+    await repo.write('k.md', 'c\n', 'edit k again', ada, sha('b\n'));
+    await expect(repo.revert(k2.commit as string, bob)).rejects.toThrow(/conflict/);
+    expect(g('status', '--porcelain')).toBe('');
+    expect(readFileSync(join(root, 'k.md'), 'utf8')).toBe('c\n');
+    expect(existsSync(join(root, '.git/REVERT_HEAD'))).toBe(false);
+  });
+
+  test('errors carry no root path', async () => {
+    for (const c of ['--abort', '0'.repeat(40)]) {
+      const e = await repo.revert(c, bob).catch((x: unknown) => x);
+      expect(e).toBeInstanceOf(ContextError);
+      expect((e as Error).message).not.toContain(root);
+    }
   });
 });
