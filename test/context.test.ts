@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
-import { ContextError, listDir, readContext, resolveSafe, searchContext } from '../src/context.ts';
+import { checkPath, ContextError, listDir, readContext, resolveSafe, searchContext } from '../src/context.ts';
 
 let root = '';
 let outside = '';
@@ -97,5 +97,16 @@ describe('searchContext', () => {
   });
   test('empty query', async () => {
     await expect(searchContext(root, '')).rejects.toBeInstanceOf(ContextError);
+  });
+});
+
+describe('checkPath', () => {
+  test.each(['../x', '.git/config', '.GIT/x', '/etc'])('rejects %s', (p) => {
+    expect(() => checkPath(root, p)).toThrow(ContextError);
+  });
+  test('normalizes without touching the filesystem', () => {
+    expect(checkPath(root, 'notes/a.md')).toBe('notes/a.md');
+    expect(checkPath(root, 'gone/deleted.md')).toBe('gone/deleted.md');
+    expect(checkPath(root, '')).toBe('');
   });
 });

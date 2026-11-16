@@ -4,15 +4,19 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { promisify } from 'node:util';
 import type { Developer } from './auth.ts';
-import { ContextError, resolveForWrite } from './context.ts';
+import { checkPath, ContextError, resolveForWrite } from './context.ts';
 
 const exec = promisify(execFile);
 const sha256 = (b: Buffer | string): string => createHash('sha256').update(b).digest('hex');
 
 export type WriteResult = { path: string; version: string | null; commit: string | null };
+export type HistoryEntry = { commit: string; author: { name: string; email: string }; date: string; message: string };
+export type RevertResult = { reverted: string; commit: string | null };
 export type Repo = {
   write(path: string, content: string, message: string, author: Developer, base?: string): Promise<WriteResult>;
   delete(path: string, message: string, author: Developer): Promise<WriteResult>;
+  history(path?: string, limit?: number): Promise<HistoryEntry[]>;
+  revert(commit: string, author: Developer): Promise<RevertResult>;
 };
 
 const code = (e: unknown): string | number | undefined => (e as { code?: string | number }).code;
@@ -96,6 +100,47 @@ export function createRepo(root: string): Repo {
         if ((await currentVersion(abs)) === null) throw new ContextError('not found');
         await git(['rm', '-q', '--', rel]);
         return { path: rel, version: null, commit: await commitStaged(message, author) };
+      });
+    },
+    async history(path, limit) {
+      const rel = path ? checkPath(root, path) : '';
+      const n = Math.min(Math.max(Math.trunc(limit ?? 50), 1), 200);
+      const out = await git([
+        'log',
+        `-n${n}`,
+        '--format=%H%x1f%an%x1f%ae%x1f%aI%x1f%s%x1e',
+        ...(rel ? ['--', rel] : []),
+      ]);
+      return out
+        .split('\x1e')
+        .map((r) => r.trim())
+        .filter(Boolean)
+        .map((r) => {
+          const [commit = '', name = '', email = '', date = '', message = ''] = r.split('\x1f');
+          return { commit, author: { name, email }, date, message };
+        });
+    },
+    async revert(commit, author) {
+      if (!/^[0-9a-f]{7,40}$/.test(commit)) throw new ContextError('commit must be a hex commit id');
+      return locked(async () => {
+        await commitManualEdits();
+        let sha: string;
+        try {
+          sha = (await git(['rev-parse', '--verify', '--quiet', `${commit}^{commit}`])).trim();
+        } catch {
+          throw new ContextError('unknown commit');
+        }
+        if (!sha) throw new ContextError('unknown commit');
+        const subject = (await git(['log', '-1', '--format=%s', sha])).trim();
+        try {
+          await git(['revert', '--no-commit', sha]);
+        } catch {
+          await git(['revert', '--abort']).catch(() => undefined);
+          throw new ContextError(`revert of ${sha.slice(0, 7)} conflicts with later changes; edit the file instead`);
+        }
+        const made = await commitStaged(`Revert "${subject}"\n\nThis reverts commit ${sha}.`, author);
+        if (made === null) await git(['revert', '--quit']).catch(() => undefined);
+        return { reverted: sha, commit: made };
       });
     },
   };

@@ -34,6 +34,11 @@ function lexical(root: string, rel: string): string {
   return abs;
 }
 
+/** Lexical-only check (no filesystem access): for paths that may no longer exist, e.g. history. Returns the posix relative path. */
+export function checkPath(root: string, rel: string): string {
+  return relative(root, lexical(root, rel)).split(sep).join('/');
+}
+
 /** Re-check on the real path: a symlink inside the root may point outside or at .git. */
 function checkReal(realRoot: string, real: string): void {
   if (outside(realRoot, real)) throw new ContextError('path outside the context repo');
