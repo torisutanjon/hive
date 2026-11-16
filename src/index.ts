@@ -1,1 +1,17 @@
-console.log('hive');
+import { ConfigError, loadConfig, type Config } from './config.ts';
+import { createHiveServer } from './server.ts';
+
+let config: Config;
+try {
+  config = loadConfig(process.env);
+} catch (e) {
+  if (e instanceof ConfigError) {
+    console.error(e.message);
+    process.exit(1);
+  }
+  throw e;
+}
+
+createHiveServer(config.developers).listen(config.port, '127.0.0.1', () =>
+  console.log(`hive listening on http://127.0.0.1:${config.port}`),
+);
