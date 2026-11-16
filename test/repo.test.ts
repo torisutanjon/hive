@@ -201,3 +201,70 @@ describe('history and revert', () => {
     }
   });
 });
+
+describe('newTicket', () => {
+  const body = (k: string, t: string): string =>
+    `---\ntitle: ${JSON.stringify(t)}\nstatus: todo\nassignee: ""\nlinks: []\n---\n\n# ${k}: ${t}\n`;
+
+  test('create', async () => {
+    const r = await repo.newTicket('HIVE', 'First ticket', ada);
+    expect(r.key).toBe('HIVE-001');
+    expect(r.path).toBe('tickets/HIVE-001.md');
+    expect(r.commit).toMatch(/^[0-9a-f]{40}$/);
+    expect(readFileSync(join(root, 'tickets/HIVE-001.md'), 'utf8')).toBe(
+      '---\ntitle: "First ticket"\nstatus: todo\nassignee: ""\nlinks: []\n---\n\n# HIVE-001: First ticket\n',
+    );
+    expect(g('log', '-1', '--format=%an|%s')).toBe('Ada|HIVE-001: new ticket');
+  });
+
+  test('next number', async () => {
+    await repo.newTicket('HIVE', 'one', ada);
+    expect((await repo.newTicket('HIVE', 'two', ada)).key).toBe('HIVE-002');
+  });
+
+  test('numbers are not reused after a delete', async () => {
+    await repo.newTicket('HIVE', 'one', ada);
+    await repo.newTicket('HIVE', 'two', ada);
+    await repo.delete('tickets/HIVE-002.md', 'rm', ada);
+    expect((await repo.newTicket('HIVE', 'three', ada)).key).toBe('HIVE-003');
+  });
+
+  test('existing file not made via newTicket counts', async () => {
+    await repo.write('tickets/HIVE-010.md', 'x\n', 'manual', ada);
+    expect((await repo.newTicket('HIVE', 'next', ada)).key).toBe('HIVE-011');
+  });
+
+  test('other files are ignored', async () => {
+    await repo.write('tickets/OTHER-050.md', 'x\n', 'o', ada);
+    await repo.write('tickets/HIVE-5.md', 'x\n', 'o', ada);
+    expect((await repo.newTicket('HIVE', 'first', ada)).key).toBe('HIVE-001');
+  });
+
+  test('concurrent calls get distinct numbers', async () => {
+    const rs = await Promise.all([1, 2, 3, 4, 5].map((i) => repo.newTicket('HIVE', `t${i}`, ada)));
+    expect(rs.map((r) => r.key).sort()).toEqual(['HIVE-001', 'HIVE-002', 'HIVE-003', 'HIVE-004', 'HIVE-005']);
+    expect(g('status', '--porcelain')).toBe('');
+  });
+
+  test('title with quotes is JSON-quoted', async () => {
+    const title = 'Say "hi" \\ there';
+    const r = await repo.newTicket('HIVE', title, ada);
+    const line = readFileSync(join(root, r.path), 'utf8').split('\n')[1];
+    expect(line).toBe(`title: ${JSON.stringify(title)}`);
+    expect(body(r.key, title)).toContain(line);
+  });
+
+  test('bad titles rejected', async () => {
+    for (const t of ['', '   ', 'a\nb', 'x'.repeat(201)]) {
+      await expect(repo.newTicket('HIVE', t, ada)).rejects.toThrow(/title/);
+      await expect(repo.newTicket('HIVE', t, ada)).rejects.toBeInstanceOf(ContextError);
+    }
+  });
+
+  test('bad keys rejected', async () => {
+    for (const k of ['hive', '1AB']) {
+      await expect(repo.newTicket(k, 'ok', ada)).rejects.toThrow(/key/);
+      await expect(repo.newTicket(k, 'ok', ada)).rejects.toBeInstanceOf(ContextError);
+    }
+  });
+});

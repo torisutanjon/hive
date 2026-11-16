@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { basename, dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import type { Developer } from './auth.ts';
 import { checkPath, ContextError, resolveForWrite } from './context.ts';
@@ -12,11 +12,13 @@ const sha256 = (b: Buffer | string): string => createHash('sha256').update(b).di
 export type WriteResult = { path: string; version: string | null; commit: string | null };
 export type HistoryEntry = { commit: string; author: { name: string; email: string }; date: string; message: string };
 export type RevertResult = { reverted: string; commit: string | null };
+export type TicketResult = { key: string; path: string; version: string; commit: string | null };
 export type Repo = {
   write(path: string, content: string, message: string, author: Developer, base?: string): Promise<WriteResult>;
   delete(path: string, message: string, author: Developer): Promise<WriteResult>;
   history(path?: string, limit?: number): Promise<HistoryEntry[]>;
   revert(commit: string, author: Developer): Promise<RevertResult>;
+  newTicket(key: string, title: string, author: Developer): Promise<TicketResult>;
 };
 
 const code = (e: unknown): string | number | undefined => (e as { code?: string | number }).code;
@@ -71,25 +73,62 @@ export function createRepo(root: string): Repo {
     }
   };
 
+  const writeUnlocked = async (
+    path: string,
+    content: string,
+    message: string,
+    author: Developer,
+    base?: string,
+  ): Promise<WriteResult> => {
+    const { abs, rel } = await resolveForWrite(root, path);
+    const current = await currentVersion(abs);
+    if (base === undefined && current !== null) {
+      throw new ContextError('file exists; pass base (its current version) to overwrite');
+    }
+    if (base !== undefined && current === null) throw new ContextError('not found');
+    if (base !== undefined && base !== current) {
+      throw new ContextError(`file changed since base; current version ${current}`);
+    }
+    await mkdir(dirname(abs), { recursive: true });
+    await writeFile(abs, content);
+    await git(['add', '--', rel]);
+    const commit = await commitStaged(message, author);
+    return { path: rel, version: sha256(content), commit };
+  };
+
   return {
     async write(path, content, message, author, base) {
       requireMessage(message);
       return locked(async () => {
         await commitManualEdits();
-        const { abs, rel } = await resolveForWrite(root, path);
-        const current = await currentVersion(abs);
-        if (base === undefined && current !== null) {
-          throw new ContextError('file exists; pass base (its current version) to overwrite');
+        return writeUnlocked(path, content, message, author, base);
+      });
+    },
+    async newTicket(key, title, author) {
+      if (!/^[A-Z][A-Z0-9]*$/.test(key)) throw new ContextError('ticket key must be uppercase letters/digits');
+      const t = title.trim();
+      if (!t || /[\r\n]/.test(title) || t.length > 200) {
+        throw new ContextError('title must be one non-empty line of at most 200 characters');
+      }
+      return locked(async () => {
+        await commitManualEdits();
+        const re = new RegExp(`^${key}-(\\d{3,})\\.md$`);
+        const names = new Set<string>();
+        try {
+          for (const n of await readdir(join(root, 'tickets'))) names.add(n);
+        } catch (e) {
+          if (code(e) !== 'ENOENT') throw e;
         }
-        if (base !== undefined && current === null) throw new ContextError('not found');
-        if (base !== undefined && base !== current) {
-          throw new ContextError(`file changed since base; current version ${current}`);
-        }
-        await mkdir(dirname(abs), { recursive: true });
-        await writeFile(abs, content);
-        await git(['add', '--', rel]);
-        const commit = await commitStaged(message, author);
-        return { path: rel, version: sha256(content), commit };
+        const added = await git(['log', '--format=', '--name-only', '--diff-filter=A', '--', 'tickets/']);
+        for (const line of added.split('\n')) if (line) names.add(basename(line));
+        const max = Math.max(
+          0,
+          ...[...names].map((n) => re.exec(n)?.[1]).filter(Boolean).map(Number),
+        );
+        const k = `${key}-${String(max + 1).padStart(3, '0')}`;
+        const content = `---\ntitle: ${JSON.stringify(t)}\nstatus: todo\nassignee: ""\nlinks: []\n---\n\n# ${k}: ${t}\n`;
+        const r = await writeUnlocked(`tickets/${k}.md`, content, `${k}: new ticket`, author);
+        return { key: k, path: r.path, version: r.version as string, commit: r.commit };
       });
     },
     async delete(path, message, author) {
