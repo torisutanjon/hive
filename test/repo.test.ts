@@ -107,6 +107,17 @@ describe('guards', () => {
   });
 });
 
+describe('pathspec magic', () => {
+  test('a file named like a pathspec is treated literally', async () => {
+    const magic = ':(glob)**';
+    expect((await repo.write(magic, 'x\n', 'add magic', ada)).path).toBe(magic);
+    await repo.delete(magic, 'rm magic', ada);
+    expect(existsSync(join(root, 'a.md'))).toBe(true);
+    expect(g('ls-files').split('\n')).toContain('a.md');
+    expect(g('show', '--name-only', '--format=', 'HEAD')).toBe(magic);
+  });
+});
+
 describe('concurrency', () => {
   test('five parallel writes serialize', async () => {
     await Promise.all([0, 1, 2, 3, 4].map((i) => repo.write(`c${i}.md`, `${i}\n`, `c${i}`, ada)));

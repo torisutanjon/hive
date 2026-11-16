@@ -30,7 +30,7 @@ export function createRepo(root: string): Repo {
       await exec(
         'git',
         ['-c', 'user.name=Hive', '-c', 'user.email=hive@localhost', '-c', 'commit.gpgsign=false', ...args],
-        { cwd: root, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } },
+        { cwd: root, env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_LITERAL_PATHSPECS: '1' } },
       )
     ).stdout;
 
