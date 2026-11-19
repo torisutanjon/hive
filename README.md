@@ -16,10 +16,10 @@ Hive is a shared MCP server that gives every developer's agent one workflow and 
    yarn install
    ```
 
-2. Create the context repo. This refuses a non-empty directory:
+2. Create the context repo. `--key` is the ticket prefix; it is saved as `ticket_key` in `project.md`:
 
    ```sh
-   yarn seed ~/hive-context
+   yarn seed ~/hive-context --key HIVE
    ```
 
 3. Make a token (at least 32 characters is required):
@@ -33,7 +33,6 @@ Hive is a shared MCP server that gives every developer's agent one workflow and 
    ```sh
    export HIVE_CONTEXT_DIR=~/hive-context
    export HIVE_TOKENS='{"<token>":{"name":"Your Name","email":"you@example.com"}}'
-   export HIVE_TICKET_KEY=HIVE
    export PORT=4000
    yarn start
    ```
@@ -46,10 +45,15 @@ Hive is a shared MCP server that gives every developer's agent one workflow and 
 | --- | --- |
 | `HIVE_CONTEXT_DIR` | Path to the context repo. Must be a git repo. |
 | `HIVE_TOKENS` | JSON map `token → {name, email}`, one entry per developer. Each token is at least 32 characters. |
-| `HIVE_TICKET_KEY` | Ticket prefix, uppercase (e.g. `HIVE`). |
 | `PORT` | 1–65535. |
 
+The ticket prefix is `ticket_key` in the context repo's `project.md` frontmatter: uppercase letters/digits starting with a letter (`^[A-Z][A-Z0-9]*$`, e.g. `HIVE`). Set it once with `yarn seed <dir> --key HIVE`; everyone on the repo shares it. Hive will not start without it.
+
 Hive listens on 127.0.0.1 only.
+
+## Upgrading
+
+Existing context repos must add `ticket_key: <KEY>` (the prefix you already use) to the frontmatter of `project.md` before upgrading, or Hive will not start.
 
 ## Connect your agent
 
@@ -131,7 +135,7 @@ Direct edits (for example in Obsidian) are fine: Hive commits them as "manual ed
 
 ## Share with teammates
 
-One person creates the context repo once: run `yarn seed ~/hive-context`, create an empty GitHub repo, then run `git remote add origin git@github.com:<owner>/<repo>.git` and `git push -u origin main`.
+One person creates the context repo once: run `yarn seed ~/hive-context --key HIVE`, create an empty GitHub repo, then run `git remote add origin git@github.com:<owner>/<repo>.git` and `git push -u origin main`.
 
 Everyone else clones it with `git clone git@github.com:<owner>/<repo>.git ~/hive-context`, then sets `HIVE_CONTEXT_DIR` to the clone.
 

@@ -1,8 +1,33 @@
-import { statSync } from 'node:fs';
+import { lstatSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { parse } from 'yaml';
 import { buildDeveloperTable, type Developer, type DeveloperTable } from './auth.ts';
 
 export type Config = { contextDir: string; developers: DeveloperTable; ticketKey: string; port: number };
+
+export const KEY = /^[A-Z][A-Z0-9]*$/;
+const KEY_FORMAT = 'uppercase letters/digits starting with a letter, e.g. HIVE';
+
+// Read ticket_key from <contextDir>/project.md frontmatter. Returns the key or pushes a problem.
+function readTicketKey(contextDir: string, problems: string[]): string | undefined {
+  const p = join(contextDir, 'project.md');
+  if (!lstatSync(p, { throwIfNoEntry: false })?.isFile()) {
+    problems.push(`project.md: missing or not a regular file; it must set ticket_key (${KEY_FORMAT})`);
+    return undefined;
+  }
+  const m = /^---\n([\s\S]*?)\n---(?:\n|$)/.exec(readFileSync(p, 'utf8').replace(/\r\n/g, '\n'));
+  let key: unknown;
+  try {
+    if (m) key = (parse(m[1] as string) as { ticket_key?: unknown } | null)?.ticket_key;
+  } catch {
+    // fall through to the format problem
+  }
+  if (typeof key !== 'string' || !KEY.test(key)) {
+    problems.push(`project.md: ticket_key must be ${KEY_FORMAT}`);
+    return undefined;
+  }
+  return key;
+}
 
 export class ConfigError extends Error {
   override name = 'ConfigError';
@@ -11,13 +36,14 @@ export class ConfigError extends Error {
 export function loadConfig(env: NodeJS.ProcessEnv): Config {
   const problems: string[] = [];
 
+  let ticketKey: string | undefined;
   const contextDir = env.HIVE_CONTEXT_DIR;
   if (!contextDir) problems.push('HIVE_CONTEXT_DIR: required');
   else if (!statSync(contextDir, { throwIfNoEntry: false })?.isDirectory()) {
     problems.push('HIVE_CONTEXT_DIR: not an existing directory');
   } else if (!statSync(join(contextDir, '.git'), { throwIfNoEntry: false })) {
     problems.push('HIVE_CONTEXT_DIR: not a git repository (no .git)');
-  }
+  } else ticketKey = readTicketKey(contextDir, problems);
 
   let tokens: Record<string, unknown> = {};
   if (!env.HIVE_TOKENS) problems.push('HIVE_TOKENS: required');
@@ -49,11 +75,6 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
         });
       }
     }
-  }
-
-  const ticketKey = env.HIVE_TICKET_KEY;
-  if (!ticketKey || !/^[A-Z][A-Z0-9]*$/.test(ticketKey)) {
-    problems.push('HIVE_TICKET_KEY: must be uppercase letters/digits starting with a letter, e.g. HIVE');
   }
 
   const port = Number(env.PORT);

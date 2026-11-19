@@ -1,11 +1,12 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parse } from 'yaml';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { loadConfig } from '../src/config.ts';
-import { seed } from '../src/seed.ts';
+import { seed, withTicketKey } from '../src/seed.ts';
 import { loadWorkflows, render, type Workflow } from '../src/workflow.ts';
 
 let parent: string;
@@ -26,8 +27,63 @@ async function wf(name: string): Promise<Workflow> {
 const git = (...args: string[]): string => execFileSync('git', ['-C', target, ...args], { encoding: 'utf8' }).trim();
 
 describe('seed', () => {
+  const frontmatter = (p: string): Record<string, unknown> => parse(/^---\n([\s\S]*?)\n---/.exec(readFileSync(p, 'utf8'))?.[1] ?? '') as Record<string, unknown>;
+  const seedProject = fileURLToPath(new URL('../seed/project.md', import.meta.url));
+
+  test('AC3 --key writes ticket_key and keeps the other frontmatter', async () => {
+    await seed(target, { key: 'HIVE' });
+    const { ticket_key, ...rest } = frontmatter(join(target, 'project.md'));
+    expect(ticket_key).toBe('HIVE');
+    expect(rest).toEqual(frontmatter(seedProject));
+  });
+
+  test.each(['TRUE', 'FALSE', 'NULL'])('YAML-reserved key %s survives a round trip', async (k) => {
+    const dir = join(parent, `k-${k}`);
+    await seed(dir, { key: k });
+    const c = loadConfig({
+      HIVE_CONTEXT_DIR: dir,
+      HIVE_TOKENS: JSON.stringify({ [`${'x'.repeat(40)}`]: { name: 'Ada', email: 'ada@example.com' } }),
+      PORT: '4000',
+    });
+    expect(c.ticketKey).toBe(k);
+  });
+
+  test('withTicketKey keeps the line ending and needs frontmatter', () => {
+    expect(withTicketKey('---\na: 1\n---\n', 'HIVE')).toBe('---\nticket_key: "HIVE"\na: 1\n---\n');
+    expect(withTicketKey('---\r\na: 1\r\n---\r\n', 'HIVE')).toBe('---\r\nticket_key: "HIVE"\r\na: 1\r\n---\r\n');
+    expect(() => withTicketKey('# hi\n', 'HIVE')).toThrow(/no frontmatter/);
+  });
+
+  test('AC3 invalid key seeds nothing', async () => {
+    await expect(seed(target, { key: '2HIVE' })).rejects.toThrow(/uppercase letters\/digits starting with a letter/);
+    expect(!existsSync(target) || readdirSync(target).length === 0).toBe(true);
+  });
+
+  test('AC3 no key and no project.md seeds nothing', async () => {
+    await expect(seed(target)).rejects.toThrow(/--key is required/);
+    expect(!existsSync(target) || readdirSync(target).length === 0).toBe(true);
+  });
+
+  test('AC3 CLI without --key exits non-zero', () => {
+    const r = spawnSync(process.execPath, ['src/seed.ts', target], { encoding: 'utf8' });
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain('--key is required');
+  });
+
+  test('AC4 existing project.md is untouched', async () => {
+    mkdirSync(target);
+    const p = join(target, 'project.md');
+    writeFileSync(p, '---\nticket_key: HIVE\n---\nmine\n');
+    const before = readFileSync(p);
+    for (const opts of [{ key: 'OTHER' }, undefined]) {
+      const entries = await seed(target, opts);
+      expect(entries.find((e) => e.path === 'project.md')?.status).toBe('skipped');
+      expect(readFileSync(p)).toEqual(before);
+    }
+  });
+
   test('creates layout and one Hive commit on main', async () => {
-    await seed(target);
+    await seed(target, { key: 'HIVE' });
     const files = [
       'project.md',
       ...['start', 'new', 'work', 'end', 'start-ticket', 'review-pr', 'ci', 'new-issue', 'new-jira', 'moved', 'rollbar'].map((n) => `workflow/${n}.md`),
@@ -40,14 +96,14 @@ describe('seed', () => {
   });
 
   test('workflows load', async () => {
-    await seed(target);
+    await seed(target, { key: 'HIVE' });
     const w = await loadWorkflows(target);
     expect(w.valid.map((x) => x.name).sort()).toEqual(['ci', 'end', 'moved', 'new', 'new-issue', 'new-jira', 'review-pr', 'rollbar', 'start', 'start-ticket', 'work']);
     expect(w.invalid).toEqual([]);
   });
 
   test('no leftover placeholders', async () => {
-    await seed(target);
+    await seed(target, { key: 'HIVE' });
     const fill: Record<string, string> = { key: 'HIVE-1', branch: 'x', number: '1', status: 'todo', item: '1' };
     for (const wf of (await loadWorkflows(target)).valid) {
       const out = render(wf, Object.fromEntries(wf.arguments.map((a) => [a.name, fill[a.name] ?? 'X'])));
@@ -56,14 +112,14 @@ describe('seed', () => {
   });
 
   test('start-ticket renders the links path', async () => {
-    await seed(target);
+    await seed(target, { key: 'HIVE' });
     const out = render(await wf('start-ticket'), { key: 'HIVE-001' });
     expect(out).toContain('tickets/HIVE-001.md');
     expect(out).toContain('links');
   });
 
   test('required arguments', async () => {
-    await seed(target);
+    await seed(target, { key: 'HIVE' });
     const work = await wf('work');
     const create = await wf('new');
     expect(() => render(work, {})).toThrow(/missing required argument: key/);
@@ -75,7 +131,7 @@ describe('seed', () => {
   });
 
   test('github writes come after an explicit yes', async () => {
-    await seed(target);
+    await seed(target, { key: 'HIVE' });
     const rp = render(await wf('review-pr'), { number: '42' });
     expect(rp).toContain('#42');
     expect(rp).toContain('gh pr diff 42 --repo <github_repo>');
@@ -92,7 +148,7 @@ describe('seed', () => {
   });
 
   test('github workflows reject unsafe arguments and pin the repo', async () => {
-    await seed(target);
+    await seed(target, { key: 'HIVE' });
     const [review, ci, issue] = [await wf('review-pr'), await wf('ci'), await wf('new-issue')];
     expect(() => render(review, { number: '42; rm -rf ~' })).toThrow(/does not match/);
     expect(() => render(ci, { branch: 'x$(id)' })).toThrow(/does not match/);
@@ -107,7 +163,7 @@ describe('seed', () => {
   });
 
   test('rollbar workflow is safe by construction', async () => {
-    await seed(target);
+    await seed(target, { key: 'HIVE' });
     const rb = await wf('rollbar');
     expect(() => render(rb, { item: '42; id' })).toThrow(/does not match/);
     const r = render(rb, { item: '42' });
@@ -127,7 +183,7 @@ describe('seed', () => {
   });
 
   test('jira tracker', async () => {
-    await seed(target);
+    await seed(target, { key: 'HIVE' });
     const [newJira, moved, work, startTicket] = [await wf('new-jira'), await wf('moved'), await wf('work'), await wf('start-ticket')];
     expect(() => render(newJira, { key: 'ax-1' })).toThrow(/does not match/);
     expect(() => render(moved, { key: '../x', status: 'todo' })).toThrow(/does not match/);
@@ -157,20 +213,19 @@ describe('seed', () => {
   });
 
   test('config accepts the seeded dir', async () => {
-    await seed(target);
-    expect(() =>
+    await seed(target, { key: 'HIVE' });
+    expect(
       loadConfig({
         HIVE_CONTEXT_DIR: target,
         HIVE_TOKENS: JSON.stringify({ [`${'x'.repeat(40)}`]: { name: 'Ada', email: 'ada@example.com' } }),
-        HIVE_TICKET_KEY: 'HIVE',
         PORT: '4000',
-      }),
-    ).not.toThrow();
+      }).ticketKey,
+    ).toBe('HIVE');
   });
 
   test('accepts an existing empty dir', async () => {
     mkdirSync(target);
-    await seed(target);
+    await seed(target, { key: 'HIVE' });
     expect(existsSync(join(target, 'project.md'))).toBe(true);
   });
 
@@ -189,7 +244,7 @@ describe('seed', () => {
       mkdirSync(join(target, 'tickets'), { recursive: true });
       writeFileSync(join(target, 'tickets/README.md'), 'mine');
       writeFileSync(join(target, 'notes.txt'), 'notes');
-      await seed(target);
+      await seed(target, { key: 'HIVE' });
       expect(readFileSync(join(target, 'tickets/README.md'), 'utf8')).toBe('mine');
       expect(readFileSync(join(target, 'notes.txt'), 'utf8')).toBe('notes');
       expect(readFileSync(join(target, 'specs/README.md'))).toEqual(readFileSync(join(seedDir, 'specs/README.md')));
@@ -199,13 +254,13 @@ describe('seed', () => {
     test('AC2 reports each seed file once and the CLI prints it', async () => {
       mkdirSync(join(target, 'tickets'), { recursive: true });
       writeFileSync(join(target, 'tickets/README.md'), 'mine');
-      const entries = await seed(target);
+      const entries = await seed(target, { key: 'HIVE' });
       expect(entries.map((e) => e.path).sort()).toEqual(seedRels());
       for (const e of entries) expect(e.status, e.path).toBe(e.path === 'tickets/README.md' ? 'skipped' : 'added');
       const other = join(parent, 'cli');
       mkdirSync(join(other, 'tickets'), { recursive: true });
       writeFileSync(join(other, 'tickets/README.md'), 'mine');
-      const out = execFileSync(process.execPath, ['src/seed.ts', other], { encoding: 'utf8' });
+      const out = execFileSync(process.execPath, ['src/seed.ts', other, '--key', 'HIVE'], { encoding: 'utf8' });
       expect(out).toContain('skipped tickets/README.md');
       expect(out).toContain('added specs/README.md');
       expect(out).toContain(`seeded ${other}`);
@@ -214,7 +269,7 @@ describe('seed', () => {
     test('AC3 non-git folder gets main and a commit of only seed files', async () => {
       mkdirSync(target);
       writeFileSync(join(target, 'notes.txt'), 'notes');
-      await seed(target);
+      await seed(target, { key: 'HIVE' });
       expect(git('branch', '--show-current')).toBe('main');
       expect(git('rev-list', '--count', 'HEAD')).toBe('1');
       const files = git('show', '--name-only', '--format=', 'HEAD').split('\n').sort();
@@ -235,7 +290,7 @@ describe('seed', () => {
       writeFileSync(join(target, 'c.txt'), 'c1');
       const [status, cached] = [git('status', '--porcelain'), git('diff', '--cached')];
       const before = git('rev-parse', 'HEAD');
-      await seed(target);
+      await seed(target, { key: 'HIVE' });
       expect(git('rev-list', '--count', `${before}..HEAD`)).toBe('1');
       expect(git('show', '--name-only', '--format=', 'HEAD').split('\n').sort()).toEqual(seedRels());
       expect(git('status', '--porcelain')).toBe(status);
@@ -244,9 +299,9 @@ describe('seed', () => {
     });
 
     test('AC5 a second run changes nothing', async () => {
-      await seed(target);
+      await seed(target, { key: 'HIVE' });
       const [head, status, files] = [git('rev-parse', 'HEAD'), git('status', '--porcelain'), listing()];
-      const again = await seed(target);
+      const again = await seed(target, { key: 'HIVE' });
       expect(again.every((e) => e.status === 'skipped')).toBe(true);
       expect(git('rev-parse', 'HEAD')).toBe(head);
       expect(git('status', '--porcelain')).toBe(status);
@@ -254,7 +309,7 @@ describe('seed', () => {
     });
 
     test('AC6 a new folder prints seeded <abs>', () => {
-      const out = execFileSync(process.execPath, ['src/seed.ts', target], { encoding: 'utf8' });
+      const out = execFileSync(process.execPath, ['src/seed.ts', target, '--key', 'HIVE'], { encoding: 'utf8' });
       expect(out).toContain(`seeded ${target}`);
     });
 
@@ -266,7 +321,7 @@ describe('seed', () => {
       writeFileSync(join(target, 'decisions'), 'file');
       writeFileSync(join(outside, 'real.md'), 'real');
       symlinkSync(join(outside, 'real.md'), join(target, 'project.md'));
-      const entries = await seed(target);
+      const entries = await seed(target, { key: 'HIVE' });
       const st = (p: string): string | undefined => entries.find((e) => e.path === p)?.status;
       expect(st('specs/README.md')).toBe('skipped');
       expect(st('decisions/README.md')).toBe('skipped');
@@ -292,7 +347,7 @@ describe('seed', () => {
       git('add', 'specs/README.md');
       rmSync(join(target, 'specs/README.md'));
       const status = git('status', '--porcelain');
-      const entries = await seed(target);
+      const entries = await seed(target, { key: 'HIVE' });
       const st = (p: string): string | undefined => entries.find((e) => e.path === p)?.status;
       expect(st('specs/README.md')).toBe('skipped');
       expect(st('project.md')).toBe('skipped');
@@ -316,13 +371,13 @@ describe('seed', () => {
       writeFileSync(hook, '#!/bin/sh\nexit 1\n');
       chmodSync(hook, 0o755);
       const status = git('status', '--porcelain');
-      await expect(seed(target)).rejects.toThrow();
+      await expect(seed(target, { key: 'HIVE' })).rejects.toThrow();
       for (const f of seedRels()) expect(existsSync(join(target, f)), f).toBe(false);
       expect(git('status', '--porcelain')).toBe(status);
       expect(git('diff', '--cached', '--name-only')).toBe('');
       rmSync(hook);
       const head = git('rev-parse', 'HEAD');
-      await seed(target);
+      await seed(target, { key: 'HIVE' });
       expect(git('rev-list', '--count', `${head}..HEAD`)).toBe('1');
       expect(git('show', '--name-only', '--format=', 'HEAD').split('\n').sort()).toEqual(seedRels());
     });
@@ -335,7 +390,7 @@ describe('seed', () => {
       const otherHead = execFileSync('git', ['-C', other, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
       process.env.GIT_DIR = join(other, '.git');
       try {
-        await seed(target);
+        await seed(target, { key: 'HIVE' });
       } finally {
         delete process.env.GIT_DIR;
       }
