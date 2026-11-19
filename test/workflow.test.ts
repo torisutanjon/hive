@@ -21,6 +21,16 @@ describe('parseWorkflow', () => {
     });
   });
 
+  test('argument pattern is kept when valid', () => {
+    const wf = parseWorkflow('p', "---\ndescription: d\narguments:\n  - name: n\n    pattern: '^[0-9]+$'\n---\nx");
+    expect(wf.arguments[0]).toMatchObject({ name: 'n', pattern: '^[0-9]+$' });
+  });
+
+  test('invalid or non-string pattern is rejected', () => {
+    expect(() => parseWorkflow('p', "---\ndescription: d\narguments:\n  - name: n\n    pattern: '('\n---\nx")).toThrow(/arguments\[0\] is invalid/);
+    expect(() => parseWorkflow('p', '---\ndescription: d\narguments:\n  - name: n\n    pattern: 5\n---\nx')).toThrow(/arguments\[0\] is invalid/);
+  });
+
   test('CRLF normalised', () => {
     const wf = parseWorkflow('start', VALID.replace(/\n/g, '\r\n'));
     expect(wf.description).toBe('Start a ticket');
@@ -67,6 +77,12 @@ describe('render', () => {
   test('missing required', () => {
     expect(() => render(wf, {})).toThrow(ContextError);
     expect(() => render(wf, {})).toThrow(/missing required argument: key/);
+  });
+
+  test('pattern: rejects non-matching, accepts matching', () => {
+    const p: Workflow = { ...wf, arguments: [{ name: 'key', required: true, pattern: '^[0-9]+$' }], body: '{{key}}' };
+    expect(() => render(p, { key: '4; x' })).toThrow(/argument key does not match \^\[0-9\]\+\$/);
+    expect(render(p, { key: '42' })).toBe('42');
   });
 
   test('values are not re-rendered', () => {
