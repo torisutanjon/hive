@@ -16,6 +16,7 @@ export type TicketResult = { key: string; path: string; version: string; commit:
 export type RepoOptions = { pullTtlMs?: number };
 export type Repo = {
   refresh(): Promise<void>;
+  shared(): Promise<boolean>;
   write(path: string, content: string, message: string, author: Developer, base?: string): Promise<WriteResult>;
   delete(path: string, message: string, author: Developer): Promise<WriteResult>;
   history(path?: string, limit?: number): Promise<HistoryEntry[]>;
@@ -178,6 +179,7 @@ export function createRepo(root: string, opts: RepoOptions = {}): Repo {
   };
 
   return {
+    shared: hasOrigin,
     refresh: () =>
       locked(async () => {
         if (!(await hasOrigin()) || Date.now() - lastPull < (opts.pullTtlMs ?? 30_000)) return;

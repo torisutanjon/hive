@@ -64,7 +64,7 @@ test('with token: hive_whoami returns the caller', async () => {
     const result = await client.callTool({ name: 'hive_whoami', arguments: {} });
     const first = (result.content as { type: string; text: string }[])[0];
     expect(first?.type).toBe('text');
-    expect(JSON.parse(first?.text ?? '')).toEqual({ name: 'Ada', email: 'ada@example.com' });
+    expect(JSON.parse(first?.text ?? '')).toEqual({ name: 'Ada', email: 'ada@example.com', shared: false });
   } finally {
     await client.close();
   }

@@ -50,6 +50,20 @@ describe('sync with origin', () => {
     expect(files).toEqual(['tickets/HIVE-001.md', 'tickets/HIVE-002.md']);
   });
 
+  test('concurrent creates of one path: exactly one wins', async () => {
+    const res = await Promise.allSettled([
+      a.write('claims/rollbar-7.md', 'by: ada\n', 'claim', ada),
+      b.write('claims/rollbar-7.md', 'by: bob\n', 'claim', bob),
+    ]);
+    const won = res.filter((r) => r.status === 'fulfilled');
+    const lost = res.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+    expect(won).toHaveLength(1);
+    expect(lost).toHaveLength(1);
+    expect(String(lost[0].reason.message)).toMatch(/exists/);
+    const winner = res[0].status === 'fulfilled' ? 'by: ada\n' : 'by: bob\n';
+    expect(onOrigin('show', 'main:claims/rollbar-7.md')).toBe(winner);
+  });
+
   test('stale base is rejected after pulling the other clone', async () => {
     await a.write('a.md', 'two\n', 'edit', ada, sha('one\n'));
     await expect(b.write('a.md', 'three\n', 'edit', bob, sha('one\n'))).rejects.toThrow(/changed since base/);
@@ -83,6 +97,13 @@ describe('sync with origin', () => {
     await expect(a.write('y.md', 'y\n', 'm', ada)).rejects.toThrow(/diverged/);
     expect(existsSync(join(A, '.git', 'rebase-merge'))).toBe(false);
     expect(existsSync(join(A, '.git', 'rebase-apply'))).toBe(false);
+  });
+
+  test('shared reports whether there is an origin', async () => {
+    expect(await a.shared()).toBe(true);
+    const d = join(tmp, 'plain');
+    run(tmp, 'init', '-q', d);
+    expect(await createRepo(d).shared()).toBe(false);
   });
 
   test('refresh pulls other clones changes', async () => {
