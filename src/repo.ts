@@ -13,7 +13,9 @@ export type WriteResult = { path: string; version: string | null; commit: string
 export type HistoryEntry = { commit: string; author: { name: string; email: string }; date: string; message: string };
 export type RevertResult = { reverted: string; commit: string | null };
 export type TicketResult = { key: string; path: string; version: string; commit: string | null };
+export type RepoOptions = { pullTtlMs?: number };
 export type Repo = {
+  refresh(): Promise<void>;
   write(path: string, content: string, message: string, author: Developer, base?: string): Promise<WriteResult>;
   delete(path: string, message: string, author: Developer): Promise<WriteResult>;
   history(path?: string, limit?: number): Promise<HistoryEntry[]>;
@@ -21,9 +23,30 @@ export type Repo = {
   newTicket(key: string, title: string, author: Developer): Promise<TicketResult>;
 };
 
+const gitEnv = (): NodeJS.ProcessEnv => ({
+  ...process.env,
+  GIT_TERMINAL_PROMPT: '0',
+  GIT_LITERAL_PATHSPECS: '1',
+  GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND ?? 'ssh -o BatchMode=yes -o ConnectTimeout=10',
+});
+
+export async function checkOrigin(root: string): Promise<string | null> {
+  try {
+    await exec('git', ['remote', 'get-url', 'origin'], { cwd: root, env: gitEnv() });
+  } catch {
+    return null;
+  }
+  try {
+    await exec('git', ['ls-remote', '--heads', 'origin'], { cwd: root, env: gitEnv() });
+    return null;
+  } catch {
+    return "cannot reach the context repo's origin; check the remote URL and your SSH key";
+  }
+}
+
 const code = (e: unknown): string | number | undefined => (e as { code?: string | number }).code;
 
-export function createRepo(root: string): Repo {
+export function createRepo(root: string, opts: RepoOptions = {}): Repo {
   let tail: Promise<unknown> = Promise.resolve();
   const locked = <T>(fn: () => Promise<T>): Promise<T> => {
     const next = tail.then(fn, fn);
@@ -36,9 +59,67 @@ export function createRepo(root: string): Repo {
       await exec(
         'git',
         ['-c', 'user.name=Hive', '-c', 'user.email=hive@localhost', '-c', 'commit.gpgsign=false', ...args],
-        { cwd: root, env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_LITERAL_PATHSPECS: '1' } },
+        { cwd: root, env: gitEnv() },
       )
     ).stdout;
+
+  let lastPull = 0;
+  let origin: boolean | undefined;
+  const hasOrigin = async (): Promise<boolean> => {
+    if (origin === undefined) {
+      try {
+        await git(['remote', 'get-url', 'origin']);
+        origin = true;
+      } catch {
+        origin = false;
+      }
+    }
+    return origin;
+  };
+  const branch = async (): Promise<string> => (await git(['rev-parse', '--abbrev-ref', 'HEAD'])).trim();
+  const pull = async (): Promise<void> => {
+    try {
+      await git(['pull', '-q', '--rebase', 'origin', await branch()]);
+    } catch {
+      try {
+        await git(['rebase', '--abort']);
+      } catch {
+        throw new ContextError("can't reach origin; nothing written");
+      }
+      throw new ContextError('context repo diverged from origin; resolve it by hand in the context repo');
+    }
+    lastPull = Date.now();
+  };
+  const push = async (): Promise<boolean> => {
+    try {
+      await git(['push', '-q', 'origin', await branch()]);
+      return true;
+    } catch (e) {
+      if (/rejected|non-fast-forward|fetch first/i.test((e as { stderr?: string }).stderr ?? '')) return false;
+      throw new ContextError("can't reach origin; nothing written");
+    }
+  };
+  const ahead = async (): Promise<boolean> =>
+    Number((await git(['rev-list', '--count', `origin/${await branch()}..HEAD`])).trim()) > 0;
+  const mutate = <T extends { commit: string | null }>(op: () => Promise<T>): Promise<T> =>
+    locked(async () => {
+      await commitManualEdits();
+      if (!(await hasOrigin())) return op();
+      await pull();
+      for (let i = 0; i < 3; i++) {
+        const r = await op();
+        if (!(await ahead())) return r;
+        try {
+          if (await push()) return r;
+        } catch (e) {
+          if (r.commit) await git(['reset', '-q', '--hard', 'HEAD~1']);
+          throw e;
+        }
+        if (r.commit) await git(['reset', '-q', '--hard', 'HEAD~1']);
+        await pull();
+      }
+      throw new ContextError('origin is busy; try again');
+    });
 
   const commitManualEdits = async (): Promise<void> => {
     if ((await git(['status', '--porcelain'])).trim()) {
@@ -97,10 +178,20 @@ export function createRepo(root: string): Repo {
   };
 
   return {
+    refresh: () =>
+      locked(async () => {
+        if (!(await hasOrigin()) || Date.now() - lastPull < (opts.pullTtlMs ?? 30_000)) return;
+        await commitManualEdits();
+        try {
+          await pull();
+        } catch (e) {
+          console.warn(`hive: pull failed: ${(e as Error).message}`);
+          lastPull = Date.now();
+        }
+      }),
     async write(path, content, message, author, base) {
       requireMessage(message);
-      return locked(async () => {
-        await commitManualEdits();
+      return mutate(async () => {
         return writeUnlocked(path, content, message, author, base);
       });
     },
@@ -110,8 +201,7 @@ export function createRepo(root: string): Repo {
       if (!t || /[\r\n]/.test(title) || t.length > 200) {
         throw new ContextError('title must be one non-empty line of at most 200 characters');
       }
-      return locked(async () => {
-        await commitManualEdits();
+      return mutate(async () => {
         const re = new RegExp(`^${key}-(\\d{3,})\\.md$`);
         const names = new Set<string>();
         try {
@@ -133,8 +223,7 @@ export function createRepo(root: string): Repo {
     },
     async delete(path, message, author) {
       requireMessage(message);
-      return locked(async () => {
-        await commitManualEdits();
+      return mutate(async () => {
         const { abs, rel } = await resolveForWrite(root, path);
         if ((await currentVersion(abs)) === null) throw new ContextError('not found');
         await git(['rm', '-q', '--', rel]);
@@ -161,8 +250,7 @@ export function createRepo(root: string): Repo {
     },
     async revert(commit, author) {
       if (!/^[0-9a-f]{7,40}$/.test(commit)) throw new ContextError('commit must be a hex commit id');
-      return locked(async () => {
-        await commitManualEdits();
+      return mutate(async () => {
         let sha: string;
         try {
           sha = (await git(['rev-parse', '--verify', '--quiet', `${commit}^{commit}`])).trim();

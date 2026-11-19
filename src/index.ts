@@ -1,4 +1,5 @@
 import { ConfigError, loadConfig, type Config } from './config.ts';
+import { checkOrigin } from './repo.ts';
 import { createHiveServer } from './server.ts';
 
 let config: Config;
@@ -10,6 +11,12 @@ try {
     process.exit(1);
   }
   throw e;
+}
+
+const problem = await checkOrigin(config.contextDir);
+if (problem) {
+  console.error(problem);
+  process.exit(1);
 }
 
 createHiveServer(config).listen(config.port, '127.0.0.1', () =>

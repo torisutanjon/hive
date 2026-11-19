@@ -120,6 +120,16 @@ project.md   base_branch, verify, commit_format
 
 Direct edits (for example in Obsidian) are fine: Hive commits them as "manual edits" before its next write.
 
+## Share with teammates
+
+One person creates the context repo once: run `yarn seed ~/hive-context`, create an empty GitHub repo, then run `git remote add origin git@github.com:<owner>/<repo>.git` and `git push -u origin main`.
+
+Everyone else clones it with `git clone git@github.com:<owner>/<repo>.git ~/hive-context`, then sets `HIVE_CONTEXT_DIR` to the clone.
+
+Each developer runs their own Hive. With an `origin`, Hive pulls before every change and pushes after it. Reads pull at most every 30 s. If origin is unreachable (10 s connect timeout), writes are refused. Hive uses your own git SSH key and stores no GitHub credentials. At startup it exits if origin can't be reached.
+
+Without an `origin`, Hive works locally as before.
+
 ## Development
 
 ```sh
