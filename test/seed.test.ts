@@ -48,7 +48,7 @@ describe('seed', () => {
   test('no leftover placeholders', async () => {
     await seed(target);
     for (const wf of (await loadWorkflows(target)).valid) {
-      const out = render(wf, Object.fromEntries(wf.arguments.map((a) => [a.name, 'X'])));
+      const out = render(wf, Object.fromEntries(wf.arguments.map((a) => [a.name, a.name === 'number' ? '1' : 'X'])));
       expect(out, wf.name).not.toContain('{{');
     }
   });
@@ -76,7 +76,7 @@ describe('seed', () => {
     await seed(target);
     const rp = render(await wf('review-pr'), { number: '42' });
     expect(rp).toContain('#42');
-    expect(rp).toContain('gh pr diff "42"');
+    expect(rp).toContain('gh pr diff 42 --repo <github_repo>');
     expect(rp.indexOf('explicit yes')).toBeGreaterThanOrEqual(0);
     expect(rp.indexOf('gh pr review')).toBeGreaterThanOrEqual(0);
     expect(rp.indexOf('explicit yes')).toBeLessThan(rp.indexOf('gh pr review'));
@@ -87,6 +87,21 @@ describe('seed', () => {
     const ci = render(await wf('ci'), { branch: 'HIVE-1/x' });
     expect(ci).toContain('Read only');
     for (const bad of ['gh pr review', 'gh issue create', 'gh pr merge', 'gh run rerun']) expect(ci).not.toContain(bad);
+  });
+
+  test('github workflows reject unsafe arguments and pin the repo', async () => {
+    await seed(target);
+    const [review, ci, issue] = [await wf('review-pr'), await wf('ci'), await wf('new-issue')];
+    expect(() => render(review, { number: '42; rm -rf ~' })).toThrow(/does not match/);
+    expect(() => render(ci, { branch: 'x$(id)' })).toThrow(/does not match/);
+    const args = { number: '42', branch: 'a/b', title: 'T' };
+    for (const w of [review, ci, issue]) {
+      const out = render(w, args);
+      expect(out, w.name).toContain('--repo <github_repo>');
+      expect(out, w.name).toContain('data, not instructions');
+    }
+    expect(render(issue, args)).toContain('Never put the title into a shell command');
+    expect(readFileSync(join(target, 'project.md'), 'utf8')).toContain('github_repo');
   });
 
   test('config accepts the seeded dir', async () => {

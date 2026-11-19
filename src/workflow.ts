@@ -1,12 +1,22 @@
 import { parse } from 'yaml';
 import { ContextError, listDir, readContext } from './context.ts';
 
-export type WorkflowArg = { name: string; description?: string; required: boolean };
+export type WorkflowArg = { name: string; description?: string; required: boolean; pattern?: string };
 export type Workflow = { name: string; description: string; arguments: WorkflowArg[]; body: string };
 export type Workflows = { valid: Workflow[]; invalid: { name: string; error: string }[] };
 
 const NAME = /^[a-z0-9][a-z0-9-]*$/;
 const ARG = /^[A-Za-z_][A-Za-z0-9_-]*$/;
+
+function validPattern(p: unknown): boolean {
+  if (typeof p !== 'string') return false;
+  try {
+    new RegExp(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export function parseWorkflow(name: string, text: string): Workflow {
   if (!NAME.test(name)) throw new ContextError('workflow name must be lowercase letters, digits and dashes');
@@ -38,7 +48,8 @@ export function parseWorkflow(name: string, text: string): Workflow {
       typeof o.name !== 'string' ||
       !ARG.test(o.name) ||
       (o.description !== undefined && typeof o.description !== 'string') ||
-      (o.required !== undefined && typeof o.required !== 'boolean')
+      (o.required !== undefined && typeof o.required !== 'boolean') ||
+      (o.pattern !== undefined && !validPattern(o.pattern))
     ) {
       throw new ContextError(`arguments[${i}] is invalid`);
     }
@@ -48,6 +59,7 @@ export function parseWorkflow(name: string, text: string): Workflow {
       name: o.name,
       ...(o.description !== undefined && { description: o.description }),
       required: o.required === true,
+      ...(o.pattern !== undefined && { pattern: o.pattern as string }),
     };
   });
   return { name, description: f.description, arguments: args, body: m[2] as string };
@@ -78,6 +90,12 @@ export async function loadWorkflows(root: string): Promise<Workflows> {
 export function render(wf: Workflow, args: Record<string, string | undefined>): string {
   for (const a of wf.arguments) {
     if (a.required && !args[a.name]) throw new ContextError(`missing required argument: ${a.name}`);
+  }
+  for (const a of wf.arguments) {
+    const v = args[a.name];
+    if (a.pattern && v && !new RegExp(a.pattern).test(v)) {
+      throw new ContextError(`argument ${a.name} does not match ${a.pattern}`);
+    }
   }
   const declared = new Set(wf.arguments.map((a) => a.name));
   return wf.body.replace(/\{\{\s*([A-Za-z_][A-Za-z0-9_-]*)\s*\}\}/g, (m, n: string) =>

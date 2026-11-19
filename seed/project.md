@@ -2,6 +2,7 @@
 base_branch: main
 verify: []
 commit_format: "{KEY}-###: {desc}"
+github_repo: "" # owner/name of the code repo on GitHub; used by the review-pr, ci and new-issue workflows
 ---
 
 # Project settings
