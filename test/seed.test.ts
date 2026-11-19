@@ -76,6 +76,7 @@ describe('seed', () => {
     await seed(target);
     const rp = render(await wf('review-pr'), { number: '42' });
     expect(rp).toContain('#42');
+    expect(rp).toContain('gh pr diff "42"');
     expect(rp.indexOf('explicit yes')).toBeGreaterThanOrEqual(0);
     expect(rp.indexOf('gh pr review')).toBeGreaterThanOrEqual(0);
     expect(rp.indexOf('explicit yes')).toBeLessThan(rp.indexOf('gh pr review'));

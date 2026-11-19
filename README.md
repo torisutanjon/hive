@@ -108,9 +108,9 @@ The seeded prompts:
 - `ci {branch}`: show GitHub Actions results for a branch and explain failures (read only).
 - `new-issue {title}`: draft a GitHub issue, check for duplicates, create it only after you say yes.
 
-The GitHub workflows use your agent's own GitHub access (the `gh` CLI or a GitHub MCP server); Hive stores no GitHub credentials.
-
 They are plain markdown in `workflow/` of the context repo. Edits apply on the next request; new files appear after the client reconnects. `project.md` holds `base_branch`, `verify` and `commit_format` for the `work` workflow.
+
+The GitHub workflows use your agent's own GitHub access (the `gh` CLI or a GitHub MCP server); Hive stores no GitHub credentials.
 
 ## Context repo
 
