@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -275,6 +275,73 @@ describe('seed', () => {
       expect(readFileSync(join(target, 'decisions'), 'utf8')).toBe('file');
       expect(lstatSync(join(target, 'project.md')).isSymbolicLink()).toBe(true);
       expect(readFileSync(join(outside, 'real.md'), 'utf8')).toBe('real');
+    });
+
+    test('keeps staged user changes on a seed path', async () => {
+      mkdirSync(target);
+      git('init', '-q', '-b', 'main');
+      writeFileSync(join(target, 'a.txt'), 'a');
+      git('add', '.');
+      gitC('commit', '-qm', 'init');
+      writeFileSync(join(target, 'project.md'), 'mine');
+      git('add', 'project.md');
+      gitC('commit', '-qm', 'p');
+      git('rm', '-q', 'project.md');
+      mkdirSync(join(target, 'specs'));
+      writeFileSync(join(target, 'specs/README.md'), 'specs: user draft, not like the project file');
+      git('add', 'specs/README.md');
+      rmSync(join(target, 'specs/README.md'));
+      const status = git('status', '--porcelain');
+      const entries = await seed(target);
+      const st = (p: string): string | undefined => entries.find((e) => e.path === p)?.status;
+      expect(st('specs/README.md')).toBe('skipped');
+      expect(st('project.md')).toBe('skipped');
+      expect(git('diff', '--cached', '--name-only')).toContain('specs/README.md');
+      expect(git('show', ':specs/README.md')).toBe('specs: user draft, not like the project file');
+      expect(existsSync(join(target, 'specs/README.md'))).toBe(false);
+      expect(git('status', '--porcelain')).toContain('D  project.md');
+      expect(git('status', '--porcelain').split('\n').filter((l) => l.includes('project.md') || l.includes('specs'))).toEqual(
+        status.split('\n').filter((l) => l.includes('project.md') || l.includes('specs')),
+      );
+    });
+
+    test('a failed commit leaves no seed files behind', async () => {
+      mkdirSync(target);
+      git('init', '-q', '-b', 'main');
+      writeFileSync(join(target, 'a.txt'), 'a');
+      git('add', '.');
+      gitC('commit', '-qm', 'init');
+      const hook = join(target, '.git/hooks/pre-commit');
+      mkdirSync(join(target, '.git/hooks'), { recursive: true });
+      writeFileSync(hook, '#!/bin/sh\nexit 1\n');
+      chmodSync(hook, 0o755);
+      const status = git('status', '--porcelain');
+      await expect(seed(target)).rejects.toThrow();
+      for (const f of seedRels()) expect(existsSync(join(target, f)), f).toBe(false);
+      expect(git('status', '--porcelain')).toBe(status);
+      expect(git('diff', '--cached', '--name-only')).toBe('');
+      rmSync(hook);
+      const head = git('rev-parse', 'HEAD');
+      await seed(target);
+      expect(git('rev-list', '--count', `${head}..HEAD`)).toBe('1');
+      expect(git('show', '--name-only', '--format=', 'HEAD').split('\n').sort()).toEqual(seedRels());
+    });
+
+    test('inherited GIT_DIR does not redirect git', async () => {
+      const other = join(parent, 'other');
+      mkdirSync(other);
+      execFileSync('git', ['-C', other, 'init', '-q', '-b', 'main']);
+      execFileSync('git', ['-C', other, '-c', 'user.name=S', '-c', 'user.email=s@x', '-c', 'commit.gpgsign=false', 'commit', '-q', '--allow-empty', '-m', 'o']);
+      const otherHead = execFileSync('git', ['-C', other, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
+      process.env.GIT_DIR = join(other, '.git');
+      try {
+        await seed(target);
+      } finally {
+        delete process.env.GIT_DIR;
+      }
+      expect(existsSync(join(target, '.git'))).toBe(true);
+      expect(git('log', '--format=%s')).toBe('seed: Hive context repo');
+      expect(execFileSync('git', ['-C', other, 'rev-parse', 'HEAD'], { encoding: 'utf8' })).toBe(otherHead);
     });
   });
 });
