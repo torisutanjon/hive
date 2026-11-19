@@ -6,6 +6,7 @@
   },
   "files": [
     "dist",
+    "hooks",
     "seed"
   ],
   "type": "module",
