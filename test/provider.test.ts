@@ -83,6 +83,20 @@ describe('provider add / list / remove', () => {
     expect((await readHiveConfig(home)).providers?.kimi).toBeDefined();
   });
 
+  test('a failing register leaves no token in the error or its cause', async () => {
+    await setUp();
+    mkdirSync(join(home, '.kimi'));
+    const fake = script('bad.sh', `echo "$2" >&2; exit 3`);
+    const err = await addProvider('kimi', '~/.kimi', `${fake} {url} {token}`, mkIo()).then(
+      () => new Error('did not fail'),
+      (e: Error) => e,
+    );
+    expect(err.message).toBe('register command failed (exit 3)');
+    expect(String(err.cause ?? '')).not.toContain(TOKEN);
+    expect(JSON.stringify(err, Object.getOwnPropertyNames(err))).not.toContain(TOKEN);
+    expect(JSON.stringify(err.cause ?? null, Object.getOwnPropertyNames(err.cause ?? {}))).not.toContain(TOKEN);
+  });
+
   test('list shows ids and templates, never a token', async () => {
     await setUp();
     await listProviders(mkIo());

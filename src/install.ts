@@ -146,8 +146,8 @@ export async function runUserProvider(id: string, p: UserProvider, root: string,
     await exec('/bin/sh', ['-c', cmd], { cwd: root, env: io.env });
   } catch (e) {
     // never echo stdout/stderr: the command line holds the token
-    const code = (e as { code?: unknown }).code;
-    throw new Error(`register command failed (exit ${String(code)})`, { cause: e });
+    // eslint-disable-next-line preserve-caught-error -- the caught error's cmd/stderr hold the token
+    throw new Error(`register command failed (exit ${String((e as { code?: unknown }).code)})`);
   }
   return `${id}: registered (advisory mode: role rules in AGENTS.md, no guard)`;
 }
