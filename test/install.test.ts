@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { chmodSync, readdirSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, readdirSync, symlinkSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -69,7 +69,7 @@ describe('url, config file, port', () => {
   });
 
   test('serverName', () => {
-    expect(serverName('Hive.Context-Sample.git')).toBe('hive-hive-context-sample');
+    expect(serverName('Acme', 'Hive.Context-Sample.git')).toBe('hive-acme-hive-context-sample');
   });
 
   test('writeHiveConfig is 0700 dir, 0600 file, and round-trips', async () => {
@@ -177,6 +177,15 @@ describe('agents', () => {
     expect(upsertCodexTable(`${old.trimEnd()}`, 'hive-ctx', BLOCK).startsWith(other)).toBe(true);
   });
 
+  test('upsertCodexTable tolerates comments, quoted keys and indented neighbours', () => {
+    const other = '[mcp_servers.playwright]\ncommand = "npx"\n';
+    const a = upsertCodexTable(`${other}\n[mcp_servers.hive-ctx] # mine\nurl = "old"\n`, 'hive-ctx', BLOCK);
+    expect(a).toBe(`${other}\n${BLOCK}`);
+    const b = upsertCodexTable(`${other}\n[ mcp_servers."hive-ctx" ]\nurl = "old"\n\n  [other]\nx = 1\n`, 'hive-ctx', BLOCK);
+    expect(b.match(/hive-ctx/g)).toHaveLength(1);
+    expect(b).toBe(`${other}\n${BLOCK}\n  [other]\nx = 1\n`);
+  });
+
   test('no agent dirs: nothing is called', async () => {
     const f = fakes();
     const io = mkIo(envFor([]));
@@ -204,7 +213,8 @@ describe('agents', () => {
     mkdirSync(join(home, '.codex'));
     const cfg = join(home, '.codex/config.toml');
     const other = 'model = "x"\n\n[mcp_servers.playwright]\ncommand = "npx"\nargs = ["a"]\n';
-    writeFileSync(cfg, other, { mode: 0o640 });
+    writeFileSync(cfg, other, { mode: 0o644 });
+    chmodSync(cfg, 0o644);
     const io = mkIo(envFor([]));
     expect(await registerCodex(io, 'hive-ctx', MCP, TOKEN)).toBe('Codex: registered hive-ctx');
     await registerCodex(io, 'hive-ctx', MCP, TOKEN);
@@ -212,7 +222,7 @@ describe('agents', () => {
     expect(text.startsWith(other)).toBe(true);
     expect(text.match(/\[mcp_servers\.hive-ctx\]/g)).toHaveLength(1);
     expect(text).toContain(BLOCK);
-    expect(statSync(cfg).mode & 0o777).toBe(0o640);
+    expect(statSync(cfg).mode & 0o777).toBe(0o600);
     expect(f.log()).not.toContain('claude');
   });
 
@@ -268,6 +278,41 @@ describe('project files', () => {
     expect(exclude()).not.toContain('/AGENTS.md');
   });
 
+  test('symlinked files and folders are never written through', async () => {
+    const outside = join(root, 'outside.txt');
+    writeFileSync(outside, 'keep');
+    symlinkSync(outside, join(project, 'AGENTS.md'));
+    const outDir = join(root, 'outdir');
+    mkdirSync(outDir);
+    mkdirSync(join(project, '.claude'));
+    symlinkSync(outDir, join(project, '.claude/commands'));
+    const out = await writeProjectFiles(project, 'hive-ctx', envFor([]));
+    expect(readFileSync(outside, 'utf8')).toBe('keep');
+    expect(out).toContain('skipped AGENTS.md: symlink or not a regular file');
+    expect(out).toContain('skipped .claude/commands/hive-start.md: symlink or not a regular file');
+    expect(readdirSync(outDir)).toEqual([]);
+    expect(read('CLAUDE.md')).toBe('@AGENTS.md\n');
+  });
+
+  test('a custom stub is kept, an installer stub is rewritten', async () => {
+    mkdirSync(join(project, '.claude/commands'), { recursive: true });
+    writeFileSync(join(project, '.claude/commands/hive-work.md'), 'my own work command\n');
+    writeFileSync(join(project, '.claude/commands/hive-end.md'), 'Call the `hive_workflow` tool of the `old` MCP server with name `end`, then follow the returned instructions.\n');
+    const out = await writeProjectFiles(project, 'hive-ctx', envFor([]));
+    expect(read('.claude/commands/hive-work.md')).toBe('my own work command\n');
+    expect(out).toContain('kept .claude/commands/hive-work.md: not written by Hive');
+    expect(read('.claude/commands/hive-end.md')).toContain('`hive-ctx`');
+    expect(exclude()).not.toContain('/.claude/commands/hive-work.md');
+  });
+
+  test('a deleted exclude file is rebuilt for installer stubs without duplicates', async () => {
+    await writeProjectFiles(project, 'hive-ctx', envFor([]));
+    rmSync(join(project, '.git/info/exclude'));
+    await writeProjectFiles(project, 'hive-ctx', envFor([]));
+    await writeProjectFiles(project, 'hive-ctx', envFor([]));
+    for (const w of ['start', 'new', 'work', 'end']) expect(exclude().filter((l) => l === `/.claude/commands/hive-${w}.md`)).toHaveLength(1);
+  });
+
   test('existing CLAUDE.md gets the line once and keeps its text', async () => {
     writeFileSync(join(project, 'CLAUDE.md'), '# mine\nrules');
     await writeProjectFiles(project, 'hive-ctx', envFor([]));
@@ -314,7 +359,7 @@ describe('install', () => {
     expect(await readHiveConfig(home)).toEqual(cfg);
     expect(asked).toEqual([]);
     expect(readFileSync(join(project, 'AGENTS.md'), 'utf8').match(/BEGIN:hive/g)).toHaveLength(1);
-    expect(readFileSync(join(home, '.codex/config.toml'), 'utf8').match(/\[mcp_servers\.hive-ctx\]/g)).toHaveLength(1);
+    expect(readFileSync(join(home, '.codex/config.toml'), 'utf8').match(/\[mcp_servers\.hive-acme-ctx\]/g)).toHaveLength(1);
     expect(readFileSync(join(home, '.codex/config.toml'), 'utf8')).toContain('[mcp_servers.playwright]');
     const ex = readFileSync(join(project, '.git/info/exclude'), 'utf8').split('\n');
     expect(new Set(ex).size).toBe(ex.length);
@@ -323,7 +368,7 @@ describe('install', () => {
     rmSync(f.state);
     lines = [];
     await install(URL_, mkIo(env));
-    expect(lines).toContain('Claude Code: registered hive-ctx');
+    expect(lines).toContain('Claude Code: registered hive-acme-ctx');
     expect((await readHiveConfig(home)).contexts['acme/ctx']?.token).toBe(ctx?.token);
     await noToken(ctx?.token ?? 'x');
   });
@@ -339,6 +384,50 @@ describe('install', () => {
     expect(cfg.contexts['acme/two']?.dir).toBe(dirOf('acme', 'two'));
     expect(cfg.contexts['acme/two']?.port).not.toBe(cfg.contexts['acme/ctx']?.port);
     expect(existsSync(join(dirOf('acme', 'two'), 'project.md'))).toBe(true);
+  });
+
+  test('a failed first push is retried on re-run without asking again', async () => {
+    const { env } = setup();
+    const hook = join(remote, 'hooks/pre-receive');
+    mkdirSync(join(remote, 'hooks'), { recursive: true });
+    writeFileSync(hook, '#!/bin/sh\nexit 1\n');
+    chmodSync(hook, 0o755);
+    await expect(install(URL_, mkIo(env))).rejects.toThrow();
+    expect(asked).toHaveLength(1);
+    rmSync(hook);
+    await install(URL_, mkIo(env));
+    expect(asked).toHaveLength(1);
+    expect(run(root, '--git-dir', remote, 'show', 'main:project.md')).toContain('ticket_key: "ACME"');
+  });
+
+  test('same repo name under two owners gets two servers and keeps the first token', async () => {
+    mkdirSync(join(home, '.codex'));
+    fakes();
+    const [a, b] = [bare('a.git'), bare('b.git')];
+    const env = envFor([['git@github.com:acme/context.git', a], ['git@github.com:ops/context.git', b]]);
+    const project2 = join(root, 'project2');
+    mkdirSync(project2);
+    run(project2, 'init', '-q', '-b', 'main');
+    await install('git@github.com:acme/context.git', mkIo(env));
+    const first = (await readHiveConfig(home)).contexts['acme/context']?.token ?? '';
+    await install('git@github.com:ops/context.git', { ...mkIo(env, 'OPS'), cwd: project2 });
+    const toml = readFileSync(join(home, '.codex/config.toml'), 'utf8');
+    expect(toml.match(/\[mcp_servers\.hive-acme-context\]/g)).toHaveLength(1);
+    expect(toml.match(/\[mcp_servers\.hive-ops-context\]/g)).toHaveLength(1);
+    expect(toml).toContain(`Bearer ${first}`);
+  });
+
+  test('one agent failing does not stop the others, and the install reports it', async () => {
+    const { env } = setup();
+    writeFileSync(join(fakeBin, 'claude'), '#!/bin/sh\n[ "$2" = add ] && exit 1\nexit 1\n');
+    chmodSync(join(fakeBin, 'claude'), 0o755);
+    await expect(install(URL_, mkIo(env))).rejects.toThrow(/need repair/);
+    const token = (await readHiveConfig(home)).contexts['acme/ctx']?.token ?? 'x';
+    expect(readFileSync(join(home, '.codex/config.toml'), 'utf8')).toContain('[mcp_servers.hive-acme-ctx]');
+    expect(existsSync(join(project, 'AGENTS.md'))).toBe(true);
+    expect(lines.some((l) => l.startsWith('Claude Code:'))).toBe(true);
+    expect(lines.at(-1)).toBe('Start Hive: npx hive-collab-context start');
+    await noToken(token);
   });
 
   test('not a git project and bad url are refused', async () => {

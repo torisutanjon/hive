@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -28,8 +28,8 @@ export function parseSshUrl(url: string): { owner: string; repo: string } {
   return { owner, repo };
 }
 
-export function serverName(repo: string): string {
-  return `hive-${repo.replace(/\.git$/, '').toLowerCase().replace(/[^a-z0-9-]/g, '-')}`;
+export function serverName(owner: string, repo: string): string {
+  return `hive-${owner}-${repo.replace(/\.git$/, '')}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
 }
 
 export async function readHiveConfig(home: string): Promise<HiveConfig> {
@@ -44,7 +44,8 @@ export async function readHiveConfig(home: string): Promise<HiveConfig> {
 export async function writeHiveConfig(home: string, cfg: HiveConfig): Promise<void> {
   const dir = join(home, '.hive');
   await mkdir(dir, { recursive: true, mode: 0o700 });
-  const tmp = join(dir, '.config.json.tmp');
+  // ponytail: no lock; concurrent installs on one machine can lose an entry — add a lock file if it happens
+  const tmp = join(dir, `.config.json.${process.pid}.${randomBytes(4).toString('hex')}.tmp`);
   await writeFile(tmp, JSON.stringify(cfg, null, 2) + '\n', { mode: 0o600 });
   await rename(tmp, join(dir, 'config.json'));
   await chmod(join(dir, 'config.json'), 0o600);
@@ -76,20 +77,25 @@ export async function ensureClone(url: string, dir: string, env: NodeJS.ProcessE
 
 export async function ensureContext(dir: string, io: Io): Promise<string> {
   const born = await git(['rev-parse', '--verify', '-q', 'HEAD'], dir, io.env).then(() => true, () => false);
+  let key: string;
   if (!born) {
-    const key = (await io.ask('Ticket key for this new context repo (e.g. HIVE): ')).trim();
+    key = (await io.ask('Ticket key for this new context repo (e.g. HIVE): ')).trim();
     await git(['symbolic-ref', 'HEAD', 'refs/heads/main'], dir, io.env);
     await seed(dir, { key });
-    await git(['push', '-q', '-u', 'origin', 'main'], dir, io.env);
-    return key;
+  } else {
+    const problems: string[] = [];
+    const found = readTicketKey(dir, problems);
+    if (found === undefined) throw new Error(`${problems.join('; ')}; add ticket_key to project.md`);
+    key = found;
   }
-  const problems: string[] = [];
-  const key = readTicketKey(dir, problems);
-  if (key === undefined) throw new Error(`${problems.join('; ')}; add ticket_key to project.md`);
+  // a previous run may have seeded but failed to push
+  const branch = await git(['symbolic-ref', '--short', 'HEAD'], dir, io.env);
+  const pushed = await git(['rev-parse', '--verify', '-q', `refs/remotes/origin/${branch}`], dir, io.env).then(() => true, () => false);
+  if (!pushed) await git(['push', '-q', '-u', 'origin', branch], dir, io.env);
   return key;
 }
 
-const CLAUDE_FAILED = 'Claude Code: could not register';
+const CLAUDE_FAILED = 'could not register';
 
 export async function registerClaude(io: Io, root: string, name: string, url: string, token: string): Promise<string | null> {
   if (!existsSync(join(io.home, '.claude'))) return null;
@@ -108,9 +114,11 @@ export async function registerClaude(io: Io, root: string, name: string, url: st
 
 export function upsertCodexTable(toml: string, name: string, block: string): string {
   const lines = toml.split('\n');
-  const i = lines.findIndex((l) => l.trimEnd() === `[mcp_servers.${name}]`);
+  const n = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const header = new RegExp(`^\\s*\\[\\s*mcp_servers\\.(?:"${n}"|${n})\\s*\\]\\s*(?:#.*)?$`);
+  const i = lines.findIndex((l) => header.test(l));
   if (i < 0) return toml === '' ? block : `${toml}${toml.endsWith('\n') ? '' : '\n'}\n${block}`;
-  let j = lines.findIndex((l, k) => k > i && l.startsWith('['));
+  let j = lines.findIndex((l, k) => k > i && /^\s*\[/.test(l));
   if (j < 0) j = lines.length;
   const before = i ? `${lines.slice(0, i).join('\n')}\n` : '';
   return before + block + (j < lines.length ? `\n${lines.slice(j).join('\n')}` : '');
@@ -124,6 +132,7 @@ export async function registerCodex(io: Io, name: string, url: string, token: st
   const text = await readFile(file, 'utf8').catch(() => '');
   const block = `[mcp_servers.${name}]\nurl = "${url}"\nhttp_headers = { Authorization = "Bearer ${token}" }\n`;
   await writeFile(file, upsertCodexTable(text, name, block), { mode: 0o600 });
+  await chmod(file, 0o600);
   return `Codex: registered ${name}`;
 }
 
@@ -151,26 +160,53 @@ Shared project context (tickets, specs, decisions, sessions) lives in Hive, MCP 
 ${END}`;
 
 const STUB_ARGS: Record<string, string> = { new: ' and {"title": "$ARGUMENTS"}', work: ' and {"key": "$ARGUMENTS"}' };
+const STUB_MARK = 'Call the `hive_workflow` tool';
+
+// True when nothing on the way to rel (inside root) is a symlink and the target is absent or a regular file.
+async function safeToWrite(root: string, rel: string): Promise<boolean> {
+  const segs = rel.split('/');
+  for (let i = 1; i <= segs.length; i++) {
+    const st = await lstat(join(root, ...segs.slice(0, i))).catch((e: NodeJS.ErrnoException) => {
+      if (e.code === 'ENOENT') return null;
+      throw e;
+    });
+    if (!st) return true;
+    if (st.isSymbolicLink() || (i < segs.length ? !st.isDirectory() : !st.isFile())) return false;
+  }
+  return true;
+}
 
 export async function writeProjectFiles(root: string, name: string, env: NodeJS.ProcessEnv): Promise<string[]> {
   const out: string[] = [];
   const created: string[] = [];
-  const put = async (rel: string, next: (cur: string) => string): Promise<void> => {
+  const owned: string[] = [];
+  const put = async (rel: string, next: (cur: string) => string, ours?: (cur: string) => boolean): Promise<boolean> => {
+    if (!(await safeToWrite(root, rel))) {
+      out.push(`skipped ${rel}: symlink or not a regular file`);
+      return false;
+    }
     const file = join(root, rel);
     const cur = await readFile(file, 'utf8').catch(() => null);
+    if (cur !== null && ours && !ours(cur)) {
+      out.push(`kept ${rel}: not written by Hive`);
+      return false;
+    }
     if (cur === null) created.push(rel);
     await mkdir(dirname(file), { recursive: true });
     await writeFile(file, next(cur ?? ''));
+    return true;
   };
-  await put('AGENTS.md', (cur) => upsertBlock(cur, agentsBlock(name)));
+  const tracked = (rel: string): Promise<boolean> => git(['ls-files', '--error-unmatch', '--', rel], root, env).then(() => true, () => false);
+  const agents = await put('AGENTS.md', (cur) => upsertBlock(cur, agentsBlock(name)));
   await put('CLAUDE.md', (cur) => (/^@AGENTS\.md[ \t]*$/m.test(cur) ? cur : `${cur}${cur === '' || cur.endsWith('\n') ? '' : '\n'}@AGENTS.md\n`));
   for (const w of ['start', 'new', 'work', 'end']) {
-    await put(`.claude/commands/hive-${w}.md`, () => `Call the \`hive_workflow\` tool of the \`${name}\` MCP server with name \`${w}\`${STUB_ARGS[w] ?? ''}, then follow the returned instructions.\n`);
+    const rel = `.claude/commands/hive-${w}.md`;
+    const text = `${STUB_MARK} of the \`${name}\` MCP server with name \`${w}\`${STUB_ARGS[w] ?? ''}, then follow the returned instructions.\n`;
+    if (await put(rel, () => text, (cur) => cur.startsWith(STUB_MARK))) owned.push(rel);
   }
   const untracked: string[] = [];
-  for (const rel of created) if (!(await git(['ls-files', '--error-unmatch', '--', rel], root, env).then(() => true, () => false))) untracked.push(rel);
+  for (const rel of new Set([...created, ...owned])) if (!(await tracked(rel))) untracked.push(rel);
   if (untracked.length) {
-    // ponytail: only files created this run are excluded; a crash before this point leaves them unexcluded until deleted and re-run
     const file = resolve(root, await git(['rev-parse', '--git-path', 'info/exclude'], root, env));
     const cur = await readFile(file, 'utf8').catch(() => '');
     const have = new Set(cur.split('\n'));
@@ -180,9 +216,7 @@ export async function writeProjectFiles(root: string, name: string, env: NodeJS.
       await writeFile(file, `${cur}${cur === '' || cur.endsWith('\n') ? '' : '\n'}${add.join('\n')}\n`);
     }
   }
-  if (!created.includes('AGENTS.md') && (await git(['ls-files', '--error-unmatch', '--', 'AGENTS.md'], root, env).then(() => true, () => false))) {
-    out.push('AGENTS.md is tracked: added the Hive block');
-  }
+  if (agents && !created.includes('AGENTS.md') && (await tracked('AGENTS.md'))) out.push('AGENTS.md is tracked: added the Hive block');
   return out;
 }
 
@@ -197,7 +231,7 @@ export async function projectRoot(cwd: string, env: NodeJS.ProcessEnv): Promise<
 export async function install(url: string, io: Io): Promise<void> {
   const root = await projectRoot(io.cwd, io.env);
   const { owner, repo } = parseSshUrl(url);
-  const [id, dir, name] = [`${owner}/${repo}`, join(io.home, '.hive', owner, repo), serverName(repo)];
+  const [id, dir, name] = [`${owner}/${repo}`, join(io.home, '.hive', owner, repo), serverName(owner, repo)];
   await ensureClone(url, dir, io.env);
   await ensureContext(dir, io);
 
@@ -220,12 +254,22 @@ export async function install(url: string, io: Io): Promise<void> {
   await writeHiveConfig(io.home, cfg);
 
   const mcp = `http://127.0.0.1:${ctx.port}/mcp`;
-  for (const line of [await registerClaude(io, root, name, mcp, ctx.token), await registerCodex(io, name, mcp, ctx.token)]) {
-    if (line) io.log(line);
-  }
+  let failed = false;
+  const attempt = async (agent: string, register: () => Promise<string | null>): Promise<void> => {
+    try {
+      const line = await register();
+      if (line) io.log(line);
+    } catch (e) {
+      failed = true;
+      io.log(`${agent}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+  await attempt('Claude Code', () => registerClaude(io, root, name, mcp, ctx.token));
+  await attempt('Codex', () => registerCodex(io, name, mcp, ctx.token));
   io.log(`Other MCP clients: ${mcp} with header Authorization: Bearer <token from ~/.hive/config.json>`);
   for (const line of await writeProjectFiles(root, name, io.env)) io.log(line);
   io.log('Start Hive: npx hive-collab-context start');
+  if (failed) throw new Error('some agents need repair: see above');
 }
 
 export function startEnv(cfg: HiveConfig, root: string, env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
