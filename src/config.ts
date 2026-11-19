@@ -9,7 +9,7 @@ export const KEY = /^[A-Z][A-Z0-9]*$/;
 const KEY_FORMAT = 'uppercase letters/digits starting with a letter, e.g. HIVE';
 
 // Read ticket_key from <contextDir>/project.md frontmatter. Returns the key or pushes a problem.
-function readTicketKey(contextDir: string, problems: string[]): string | undefined {
+export function readTicketKey(contextDir: string, problems: string[]): string | undefined {
   const p = join(contextDir, 'project.md');
   if (!lstatSync(p, { throwIfNoEntry: false })?.isFile()) {
     problems.push(`project.md: missing or not a regular file; it must set ticket_key (${KEY_FORMAT})`);

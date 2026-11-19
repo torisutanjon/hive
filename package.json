@@ -1,7 +1,13 @@
 {
-  "name": "hive",
-  "version": "0.0.0",
-  "private": true,
+  "name": "hive-collab-context",
+  "version": "0.1.0",
+  "bin": {
+    "hive-collab-context": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "seed"
+  ],
   "type": "module",
   "engines": {
     "node": ">=22.18"
@@ -11,7 +17,9 @@
     "lint": "eslint .",
     "test": "vitest run",
     "start": "node src/index.ts",
-    "seed": "node src/seed.ts"
+    "seed": "node src/seed.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "prepublishOnly": "yarn build"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
