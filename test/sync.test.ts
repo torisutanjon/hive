@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
@@ -48,5 +48,46 @@ describe('sync with origin', () => {
     expect([x.key, y.key].sort()).toEqual(['HIVE-001', 'HIVE-002']);
     const files = onOrigin('ls-tree', '--name-only', 'main', 'tickets/').split('\n').filter(Boolean);
     expect(files).toEqual(['tickets/HIVE-001.md', 'tickets/HIVE-002.md']);
+  });
+
+  test('stale base is rejected after pulling the other clone', async () => {
+    await a.write('a.md', 'two\n', 'edit', ada, sha('one\n'));
+    await expect(b.write('a.md', 'three\n', 'edit', bob, sha('one\n'))).rejects.toThrow(/changed since base/);
+    expect(onOrigin('show', 'main:a.md')).toBe('two\n');
+  });
+
+  test('write lands on origin', async () => {
+    await a.write('n.md', 'n\n', 'add', ada);
+    expect(run(A, 'rev-parse', 'HEAD').trim()).toBe(onOrigin('rev-parse', 'main').trim());
+  });
+
+  test('unreachable origin leaves nothing written', async () => {
+    const head = run(A, 'rev-parse', 'HEAD');
+    run(A, 'remote', 'set-url', 'origin', join(tmp, 'nope.git'));
+    await expect(a.write('x.md', 'x\n', 'm', ada)).rejects.toThrow(/can't reach origin/);
+    expect(run(A, 'rev-parse', 'HEAD')).toBe(head);
+    expect(existsSync(join(A, 'x.md'))).toBe(false);
+  });
+
+  test('always-rejected push gives busy and rolls back', async () => {
+    const hook = join(remote, 'hooks', 'pre-receive');
+    writeFileSync(hook, '#!/bin/sh\nexit 1\n');
+    chmodSync(hook, 0o755);
+    await expect(a.write('x.md', 'x\n', 'm', ada)).rejects.toThrow(/busy/);
+    expect(run(A, 'rev-parse', 'HEAD')).toBe(run(A, 'rev-parse', 'origin/main'));
+  });
+
+  test('diverged clone is reported and rebase aborted', async () => {
+    await b.write('a.md', 'bee\n', 'edit', bob, sha('one\n'));
+    writeFileSync(join(A, 'a.md'), 'ay\n');
+    await expect(a.write('y.md', 'y\n', 'm', ada)).rejects.toThrow(/diverged/);
+    expect(existsSync(join(A, '.git', 'rebase-merge'))).toBe(false);
+    expect(existsSync(join(A, '.git', 'rebase-apply'))).toBe(false);
+  });
+
+  test('refresh pulls other clones changes', async () => {
+    await b.write('z.md', 'z\n', 'm', bob);
+    await a.refresh();
+    expect(existsSync(join(A, 'z.md'))).toBe(true);
   });
 });
