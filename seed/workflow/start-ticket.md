@@ -4,6 +4,7 @@ arguments:
   - name: key
     description: Ticket key, e.g. HIVE-012
     required: true
+    pattern: "^[A-Z][A-Z0-9]*-[0-9]+$"
 ---
 Load the context for {{key}}. Read only; change nothing.
 

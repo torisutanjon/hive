@@ -2,6 +2,7 @@
 base_branch: main
 verify: []
 commit_format: "{KEY}-###: {desc}"
+tracker: hive # hive or jira. jira: Jira is the source of truth; file tickets from a pasted Jira ticket with new-jira
 github_repo: "" # owner/name of the code repo on GitHub; used by the review-pr, ci and new-issue workflows
 ---
 
