@@ -12,7 +12,8 @@ import { guardCommand, PROVIDERS, TIER_RULES, type FileSpec } from './tiers.ts';
 const exec = promisify(execFile);
 
 export type Context = { url: string; dir: string; token: string; port: number; name: string; email: string };
-export type HiveConfig = { contexts: Record<string, Context>; projects: Record<string, string> };
+export type UserProvider = { detect: string; register: string };
+export type HiveConfig = { contexts: Record<string, Context>; projects: Record<string, string>; providers?: Record<string, UserProvider> };
 export type Io = { home: string; cwd: string; env: NodeJS.ProcessEnv; ask: (q: string) => Promise<string>; log: (line: string) => void };
 
 const gitEnv = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => ({ ...env, GIT_TERMINAL_PROMPT: '0', GIT_LITERAL_PATHSPECS: '1' });
@@ -135,6 +136,51 @@ export async function registerCodex(io: Io, name: string, url: string, token: st
   await writeFile(file, upsertCodexTable(text, name, block), { mode: 0o600 });
   await chmod(file, 0o600);
   return `Codex: registered ${name}`;
+}
+
+export async function runUserProvider(id: string, p: UserProvider, root: string, io: Io, url: string, token: string): Promise<string | null> {
+  const detect = p.detect.startsWith('~/') ? join(io.home, p.detect.slice(2)) : p.detect;
+  if (!existsSync(detect)) return null;
+  const cmd = p.register.replaceAll('{url}', url).replaceAll('{token}', token);
+  try {
+    await exec('/bin/sh', ['-c', cmd], { cwd: root, env: io.env });
+  } catch (e) {
+    // never echo stdout/stderr: the command line holds the token
+    // eslint-disable-next-line preserve-caught-error -- the caught error's cmd/stderr hold the token
+    throw new Error(`register command failed (exit ${String((e as { code?: unknown }).code)})`);
+  }
+  return `${id}: registered (advisory mode: role rules in AGENTS.md, no guard)`;
+}
+
+const ID = /^[a-z0-9][a-z0-9-]*$/;
+
+export async function addProvider(id: string, detect: string, register: string, io: Io): Promise<void> {
+  if (!ID.test(id) || id === 'claude' || id === 'codex') throw new Error('provider id must be lowercase letters, digits and dashes, and not claude or codex');
+  if (!detect.startsWith('/') && !detect.startsWith('~/')) throw new Error('detect must be an absolute path or start with ~/');
+  if (!register.includes('{url}')) throw new Error('register command must contain {url}');
+  const cfg = await readHiveConfig(io.home);
+  (cfg.providers ??= {})[id] = { detect, register };
+  await writeHiveConfig(io.home, cfg);
+  const root = await projectRoot(io.cwd, io.env).catch(() => null);
+  const cid = root !== null && Object.hasOwn(cfg.projects, root) ? cfg.projects[root] : undefined;
+  const ctx = cid !== undefined && Object.hasOwn(cfg.contexts, cid) ? cfg.contexts[cid] : undefined;
+  if (root === null || !ctx) return io.log(`${id}: saved; it registers on the next install`);
+  const line = await runUserProvider(id, { detect, register }, root, io, `http://127.0.0.1:${ctx.port}/mcp`, ctx.token);
+  io.log(line ?? `${id}: saved; ${detect} not found here, skipped`);
+}
+
+export async function listProviders(io: Io): Promise<void> {
+  const entries = Object.entries((await readHiveConfig(io.home)).providers ?? {});
+  if (!entries.length) io.log('no providers added');
+  for (const [id, p] of entries) io.log(`${id}  detect ${p.detect}`);
+}
+
+export async function removeProvider(id: string, io: Io): Promise<void> {
+  const cfg = await readHiveConfig(io.home);
+  if (!cfg.providers || !Object.hasOwn(cfg.providers, id)) throw new Error(`no provider ${id}`);
+  cfg.providers = Object.fromEntries(Object.entries(cfg.providers).filter(([k]) => k !== id));
+  await writeHiveConfig(io.home, cfg);
+  io.log(`${id}: removed from Hive (its own registration in that agent stays)`);
 }
 
 const BEGIN = '<!-- BEGIN:hive -->';
@@ -298,6 +344,15 @@ export async function install(url: string, io: Io): Promise<void> {
   };
   await attempt('Claude Code', () => registerClaude(io, root, name, mcp, ctx.token));
   await attempt('Codex', () => registerCodex(io, name, mcp, ctx.token));
+  // a user's own command failing is theirs to fix: log it, but do not fail the install
+  for (const [pid, p] of Object.entries(cfg.providers ?? {})) {
+    try {
+      const line = await runUserProvider(pid, p, root, io, mcp, ctx.token);
+      if (line) io.log(line);
+    } catch (e) {
+      io.log(`${pid}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
   io.log(`Other MCP clients: ${mcp} with header Authorization: Bearer <token from ~/.hive/config.json>`);
   const providers = PROVIDERS.filter((p) => p.detect(io.home));
   const extra: FileSpec[] = [];
