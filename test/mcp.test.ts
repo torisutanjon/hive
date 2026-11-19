@@ -197,7 +197,7 @@ test('history, limit validation, revert', async () => {
     message: string;
   }[];
   expect(h[0]?.message).toBe('add h');
-  expect(h[0]?.author).toEqual({ name: 'Ada', email: 'ada@example.com', shared: false });
+  expect(h[0]?.author).toEqual({ name: 'Ada', email: 'ada@example.com' });
   expect(h[0]?.commit).toMatch(/^[0-9a-f]{40}$/);
   expect(isNaN(Date.parse(h[0]?.date ?? ''))).toBe(false);
 

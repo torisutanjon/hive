@@ -109,7 +109,7 @@ The seeded prompts:
 - `review-pr {number}`: review a pull request against its ticket and the ticket's linked specs and decisions; posts only after you say yes.
 - `ci {branch}`: show GitHub Actions results for a branch and explain failures (read only).
 - `new-issue {title}`: draft a GitHub issue, check for duplicates, create it only after you say yes.
-- `rollbar {item}`: turn a Rollbar error into a GitHub issue and a ticket without duplicates; claims the error first, and asks before every write.
+- `rollbar {item}`: turn a Rollbar error into a GitHub issue and a ticket without duplicates. It claims the error in the shared context automatically, then asks before creating the issue and before creating the ticket. Needs a shared context repo.
 
 They are plain markdown in `workflow/` of the context repo. Edits apply on the next request; new files appear after the client reconnects. `project.md` holds `base_branch`, `verify`, `commit_format` and `tracker` (`hive` or `jira`) for the `work` workflow.
 

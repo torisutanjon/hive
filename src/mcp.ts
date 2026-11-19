@@ -28,12 +28,12 @@ export function createMcpServer(contextDir: string, repo: Repo, ticketKey: strin
   const server = new McpServer({ name: 'hive', version: '0.0.0' });
   server.registerTool(
     'hive_whoami',
-    { description: 'Who Hive thinks you are: the developer your token belongs to.' },
-    (extra) => {
+    { description: 'Who Hive thinks you are, and whether the context repo is shared (has an origin).' },
+    async (extra) => {
       const dev = extra.authInfo?.extra?.developer as Developer | undefined;
       return {
         content: [
-          { type: 'text', text: JSON.stringify(dev ? { name: dev.name, email: dev.email } : null) },
+          { type: 'text', text: JSON.stringify(dev ? { name: dev.name, email: dev.email, shared: await repo.shared() } : null) },
         ],
       };
     },
