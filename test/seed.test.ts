@@ -29,7 +29,7 @@ describe('seed', () => {
     await seed(target);
     const files = [
       'project.md',
-      ...['start', 'new', 'work', 'end', 'start-ticket'].map((n) => `workflow/${n}.md`),
+      ...['start', 'new', 'work', 'end', 'start-ticket', 'review-pr', 'ci', 'new-issue'].map((n) => `workflow/${n}.md`),
       ...['tickets', 'specs', 'decisions', 'sessions'].map((d) => `${d}/README.md`),
     ];
     for (const f of files) expect(existsSync(join(target, f)), f).toBe(true);
@@ -41,7 +41,7 @@ describe('seed', () => {
   test('workflows load', async () => {
     await seed(target);
     const w = await loadWorkflows(target);
-    expect(w.valid.map((x) => x.name).sort()).toEqual(['end', 'new', 'start', 'start-ticket', 'work']);
+    expect(w.valid.map((x) => x.name).sort()).toEqual(['ci', 'end', 'new', 'new-issue', 'review-pr', 'start', 'start-ticket', 'work']);
     expect(w.invalid).toEqual([]);
   });
 
@@ -66,6 +66,26 @@ describe('seed', () => {
     const create = await wf('new');
     expect(() => render(work, {})).toThrow(/missing required argument: key/);
     expect(() => render(create, {})).toThrow(/title/);
+    const [review, ci, issue] = [await wf('review-pr'), await wf('ci'), await wf('new-issue')];
+    expect(() => render(review, {})).toThrow(/number/);
+    expect(() => render(ci, {})).toThrow(/branch/);
+    expect(() => render(issue, {})).toThrow(/title/);
+  });
+
+  test('github writes come after an explicit yes', async () => {
+    await seed(target);
+    const rp = render(await wf('review-pr'), { number: '42' });
+    expect(rp).toContain('#42');
+    expect(rp.indexOf('explicit yes')).toBeGreaterThanOrEqual(0);
+    expect(rp.indexOf('gh pr review')).toBeGreaterThanOrEqual(0);
+    expect(rp.indexOf('explicit yes')).toBeLessThan(rp.indexOf('gh pr review'));
+    const ni = render(await wf('new-issue'), { title: 'Bug' });
+    expect(ni.indexOf('explicit yes')).toBeGreaterThanOrEqual(0);
+    expect(ni.indexOf('gh issue create')).toBeGreaterThanOrEqual(0);
+    expect(ni.indexOf('explicit yes')).toBeLessThan(ni.indexOf('gh issue create'));
+    const ci = render(await wf('ci'), { branch: 'HIVE-1/x' });
+    expect(ci).toContain('Read only');
+    for (const bad of ['gh pr review', 'gh issue create', 'gh pr merge', 'gh run rerun']) expect(ci).not.toContain(bad);
   });
 
   test('config accepts the seeded dir', async () => {
