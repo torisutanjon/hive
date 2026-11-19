@@ -28,7 +28,7 @@ function segmentReadOnly(seg) {
 
 /** @param {unknown} cmd @returns {boolean} */
 export function readOnly(cmd) {
-  if (typeof cmd !== 'string' || /[>`]|\$\(|<\(/.test(cmd)) return false;
+  if (typeof cmd !== 'string' || /[>`'"\\$\{\}]|<\(/.test(cmd)) return false;
   const segs = cmd.split(/&&|\|\||;|\||&|\n/).filter((s) => s.trim() !== '');
   return segs.length > 0 && segs.every(segmentReadOnly);
 }
