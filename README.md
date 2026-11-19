@@ -101,6 +101,8 @@ The seeded prompts:
 
 - `start`: list tickets by status and recap the last session.
 - `new {title}`: draft a ticket with you, then file it.
+- `new-jira {key}`: with `tracker: jira`, file a ticket from a pasted Jira ticket (Jira stays the source of truth).
+- `moved {key}`: confirm you moved a ticket in Jira; clears it from the MOVE THESE IN JIRA list in `start`.
 - `work {key}`: work a ticket end to end (goal, approach, failing test, build, verify, review), then stop before pushing.
 - `end`: draft today's session note and save it on approval.
 - `start-ticket {key}`: load the ticket, its linked specs and decisions, and project settings (read only).
@@ -108,7 +110,7 @@ The seeded prompts:
 - `ci {branch}`: show GitHub Actions results for a branch and explain failures (read only).
 - `new-issue {title}`: draft a GitHub issue, check for duplicates, create it only after you say yes.
 
-They are plain markdown in `workflow/` of the context repo. Edits apply on the next request; new files appear after the client reconnects. `project.md` holds `base_branch`, `verify` and `commit_format` for the `work` workflow.
+They are plain markdown in `workflow/` of the context repo. Edits apply on the next request; new files appear after the client reconnects. `project.md` holds `base_branch`, `verify`, `commit_format` and `tracker` (`hive` or `jira`) for the `work` workflow.
 
 The GitHub workflows use your agent's own GitHub access (the `gh` CLI or a GitHub MCP server); Hive stores no GitHub credentials.
 
