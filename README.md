@@ -126,7 +126,7 @@ One person creates the context repo once: run `yarn seed ~/hive-context`, create
 
 Everyone else clones it with `git clone git@github.com:<owner>/<repo>.git ~/hive-context`, then sets `HIVE_CONTEXT_DIR` to the clone.
 
-Each developer runs their own Hive. With an `origin`, Hive pulls before every change and pushes after it. Reads pull at most every 30 s. If origin is unreachable, writes are refused. Hive uses your own git SSH key and stores no GitHub credentials. At startup it exits if origin can't be reached.
+Each developer runs their own Hive. With an `origin`, Hive pulls before every change and pushes after it. Reads pull at most every 30 s. If origin is unreachable (10 s connect timeout), writes are refused. Hive uses your own git SSH key and stores no GitHub credentials. At startup it exits if origin can't be reached.
 
 Without an `origin`, Hive works locally as before.
 

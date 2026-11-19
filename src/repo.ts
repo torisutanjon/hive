@@ -27,7 +27,7 @@ const gitEnv = (): NodeJS.ProcessEnv => ({
   ...process.env,
   GIT_TERMINAL_PROMPT: '0',
   GIT_LITERAL_PATHSPECS: '1',
-  GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND ?? 'ssh -o BatchMode=yes',
+  GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND ?? 'ssh -o BatchMode=yes -o ConnectTimeout=10',
 });
 
 export async function checkOrigin(root: string): Promise<string | null> {
