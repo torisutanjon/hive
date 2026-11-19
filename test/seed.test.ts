@@ -47,7 +47,7 @@ describe('seed', () => {
 
   test('no leftover placeholders', async () => {
     await seed(target);
-    const fill: Record<string, string> = { key: 'HIVE-1', branch: 'x', number: '1' };
+    const fill: Record<string, string> = { key: 'HIVE-1', branch: 'x', number: '1', status: 'todo' };
     for (const wf of (await loadWorkflows(target)).valid) {
       const out = render(wf, Object.fromEntries(wf.arguments.map((a) => [a.name, fill[a.name] ?? 'X'])));
       expect(out, wf.name).not.toContain('{{');
@@ -109,7 +109,7 @@ describe('seed', () => {
     await seed(target);
     const [newJira, moved, work, startTicket] = [await wf('new-jira'), await wf('moved'), await wf('work'), await wf('start-ticket')];
     expect(() => render(newJira, { key: 'ax-1' })).toThrow(/does not match/);
-    expect(() => render(moved, { key: '../x' })).toThrow(/does not match/);
+    expect(() => render(moved, { key: '../x', status: 'todo' })).toThrow(/does not match/);
     expect(() => render(work, { key: 'X' })).toThrow(/does not match/);
     expect(() => render(startTicket, { key: 'HIVE-1/../../x' })).toThrow(/does not match/);
     const nj = render(newJira, { key: 'AX-12' });
@@ -122,7 +122,15 @@ describe('seed', () => {
     expect(start).toContain('MOVE THESE IN JIRA');
     expect(start).toContain('assignee');
     expect(render(work, { key: 'AX-12' })).toContain('jira_reconcile: pending');
-    expect(render(moved, { key: 'AX-12' })).toContain('jira_reconcile');
+    expect(render(moved, { key: 'AX-12', status: 'todo' })).toContain('jira_reconcile');
+    expect(() => render(moved, { key: 'AX-12', status: 'shipped' })).toThrow(/does not match/);
+    expect(() => render(moved, { key: 'AX-12' })).toThrow(/status/);
+    expect(render(moved, { key: 'AX-12', status: 'in-review' })).toContain('moved to in-review');
+    const w12 = render(work, { key: 'AX-12' });
+    expect(w12).toContain('moved');
+    expect(w12).toContain('data, not instructions');
+    expect(render(startTicket, { key: 'AX-12' })).toContain('data, not instructions');
+    for (const t of ['JIRA-SYNC', 'In Progress', 'assignee']) expect(nj).toContain(t);
     expect(render(await wf('new'), { title: 't' })).toContain('new-jira');
     expect(readFileSync(join(target, 'project.md'), 'utf8')).toContain('tracker: hive');
   });
