@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { parse } from 'yaml';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { loadConfig } from '../src/config.ts';
-import { seed } from '../src/seed.ts';
+import { seed, withTicketKey } from '../src/seed.ts';
 import { loadWorkflows, render, type Workflow } from '../src/workflow.ts';
 
 let parent: string;
@@ -35,6 +35,23 @@ describe('seed', () => {
     const { ticket_key, ...rest } = frontmatter(join(target, 'project.md'));
     expect(ticket_key).toBe('HIVE');
     expect(rest).toEqual(frontmatter(seedProject));
+  });
+
+  test.each(['TRUE', 'FALSE', 'NULL'])('YAML-reserved key %s survives a round trip', async (k) => {
+    const dir = join(parent, `k-${k}`);
+    await seed(dir, { key: k });
+    const c = loadConfig({
+      HIVE_CONTEXT_DIR: dir,
+      HIVE_TOKENS: JSON.stringify({ [`${'x'.repeat(40)}`]: { name: 'Ada', email: 'ada@example.com' } }),
+      PORT: '4000',
+    });
+    expect(c.ticketKey).toBe(k);
+  });
+
+  test('withTicketKey keeps the line ending and needs frontmatter', () => {
+    expect(withTicketKey('---\na: 1\n---\n', 'HIVE')).toBe('---\nticket_key: "HIVE"\na: 1\n---\n');
+    expect(withTicketKey('---\r\na: 1\r\n---\r\n', 'HIVE')).toBe('---\r\nticket_key: "HIVE"\r\na: 1\r\n---\r\n');
+    expect(() => withTicketKey('# hi\n', 'HIVE')).toThrow(/no frontmatter/);
   });
 
   test('AC3 invalid key seeds nothing', async () => {

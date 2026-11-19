@@ -67,6 +67,13 @@ async function isRepoRoot(dir: string, git: Git): Promise<boolean> {
   }
 }
 
+// Insert ticket_key as the first frontmatter line, quoted so YAML keeps TRUE/NULL as strings, keeping the file's line ending.
+export function withTicketKey(text: string, key: string): string {
+  const m = /^---(\r?\n)/.exec(text);
+  if (!m) throw new Error('seed/project.md has no frontmatter');
+  return `---${m[1]}ticket_key: "${key}"${m[1]}${text.slice(m[0].length)}`;
+}
+
 export async function seed(target: string, opts: { key?: string } = {}): Promise<SeedEntry[]> {
   const { key } = opts;
   if (key !== undefined && !KEY.test(key)) throw new Error('--key must be uppercase letters/digits starting with a letter, e.g. HIVE');
@@ -90,7 +97,7 @@ export async function seed(target: string, opts: { key?: string } = {}): Promise
   for (const path of await seedFiles()) {
     const content =
       path === 'project.md' && key !== undefined
-        ? (await readFile(join(SEED_DIR, path), 'utf8')).replace(/^---\n/, `---\nticket_key: ${key}\n`)
+        ? withTicketKey(await readFile(join(SEED_DIR, path), 'utf8'), key)
         : undefined;
     entries.push({ path, status: await place(dir, path, skip, content) });
   }
