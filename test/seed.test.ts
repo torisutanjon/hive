@@ -1,7 +1,8 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { loadConfig } from '../src/config.ts';
 import { seed } from '../src/seed.ts';
@@ -173,11 +174,174 @@ describe('seed', () => {
     expect(existsSync(join(target, 'project.md'))).toBe(true);
   });
 
-  test('refuses a non-empty dir and leaves it untouched', async () => {
-    mkdirSync(target);
-    writeFileSync(join(target, 'keep.txt'), 'mine');
-    await expect(seed(target)).rejects.toThrow(/not empty/);
-    expect(readFileSync(join(target, 'keep.txt'), 'utf8')).toBe('mine');
-    expect(existsSync(join(target, 'project.md'))).toBe(false);
+  describe('into an existing folder', () => {
+    const seedDir = fileURLToPath(new URL('../seed', import.meta.url));
+    const seedRels = (): string[] =>
+      readdirSync(seedDir, { recursive: true, withFileTypes: true })
+        .filter((d) => d.isFile())
+        .map((d) => relative(seedDir, join(d.parentPath, d.name)).split('\\').join('/'))
+        .sort();
+    const gitC = (...args: string[]): string =>
+      execFileSync('git', ['-C', target, '-c', 'user.name=Seed', '-c', 'user.email=seed@x', '-c', 'commit.gpgsign=false', ...args], { encoding: 'utf8' }).trim();
+    const listing = (): string[] => readdirSync(target, { recursive: true }).map(String).filter((f) => !f.startsWith('.git')).sort();
+
+    test('AC1 adds only missing files and keeps existing ones', async () => {
+      mkdirSync(join(target, 'tickets'), { recursive: true });
+      writeFileSync(join(target, 'tickets/README.md'), 'mine');
+      writeFileSync(join(target, 'notes.txt'), 'notes');
+      await seed(target);
+      expect(readFileSync(join(target, 'tickets/README.md'), 'utf8')).toBe('mine');
+      expect(readFileSync(join(target, 'notes.txt'), 'utf8')).toBe('notes');
+      expect(readFileSync(join(target, 'specs/README.md'))).toEqual(readFileSync(join(seedDir, 'specs/README.md')));
+      expect(existsSync(join(target, 'workflow/ci.md'))).toBe(true);
+    });
+
+    test('AC2 reports each seed file once and the CLI prints it', async () => {
+      mkdirSync(join(target, 'tickets'), { recursive: true });
+      writeFileSync(join(target, 'tickets/README.md'), 'mine');
+      const entries = await seed(target);
+      expect(entries.map((e) => e.path).sort()).toEqual(seedRels());
+      for (const e of entries) expect(e.status, e.path).toBe(e.path === 'tickets/README.md' ? 'skipped' : 'added');
+      const other = join(parent, 'cli');
+      mkdirSync(join(other, 'tickets'), { recursive: true });
+      writeFileSync(join(other, 'tickets/README.md'), 'mine');
+      const out = execFileSync(process.execPath, ['src/seed.ts', other], { encoding: 'utf8' });
+      expect(out).toContain('skipped tickets/README.md');
+      expect(out).toContain('added specs/README.md');
+      expect(out).toContain(`seeded ${other}`);
+    });
+
+    test('AC3 non-git folder gets main and a commit of only seed files', async () => {
+      mkdirSync(target);
+      writeFileSync(join(target, 'notes.txt'), 'notes');
+      await seed(target);
+      expect(git('branch', '--show-current')).toBe('main');
+      expect(git('rev-list', '--count', 'HEAD')).toBe('1');
+      const files = git('show', '--name-only', '--format=', 'HEAD').split('\n').sort();
+      expect(files).toEqual(seedRels());
+      expect(git('status', '--porcelain')).toBe('?? notes.txt');
+    });
+
+    test('AC4 existing repo gets one commit of only the added files', async () => {
+      mkdirSync(target);
+      git('init', '-q', '-b', 'main');
+      writeFileSync(join(target, 'a.txt'), 'a1');
+      writeFileSync(join(target, 'b.txt'), 'b1');
+      git('add', '.');
+      gitC('commit', '-qm', 'init');
+      writeFileSync(join(target, 'a.txt'), 'a2');
+      git('add', 'a.txt');
+      writeFileSync(join(target, 'b.txt'), 'b2');
+      writeFileSync(join(target, 'c.txt'), 'c1');
+      const [status, cached] = [git('status', '--porcelain'), git('diff', '--cached')];
+      const before = git('rev-parse', 'HEAD');
+      await seed(target);
+      expect(git('rev-list', '--count', `${before}..HEAD`)).toBe('1');
+      expect(git('show', '--name-only', '--format=', 'HEAD').split('\n').sort()).toEqual(seedRels());
+      expect(git('status', '--porcelain')).toBe(status);
+      expect(git('diff', '--cached')).toBe(cached);
+      expect(['a.txt', 'b.txt', 'c.txt'].map((f) => readFileSync(join(target, f), 'utf8'))).toEqual(['a2', 'b2', 'c1']);
+    });
+
+    test('AC5 a second run changes nothing', async () => {
+      await seed(target);
+      const [head, status, files] = [git('rev-parse', 'HEAD'), git('status', '--porcelain'), listing()];
+      const again = await seed(target);
+      expect(again.every((e) => e.status === 'skipped')).toBe(true);
+      expect(git('rev-parse', 'HEAD')).toBe(head);
+      expect(git('status', '--porcelain')).toBe(status);
+      expect(listing()).toEqual(files);
+    });
+
+    test('AC6 a new folder prints seeded <abs>', () => {
+      const out = execFileSync(process.execPath, ['src/seed.ts', target], { encoding: 'utf8' });
+      expect(out).toContain(`seeded ${target}`);
+    });
+
+    test('AC7 symlinks and file-vs-folder clashes are skipped, never written through', async () => {
+      const outside = join(parent, 'outside');
+      mkdirSync(outside);
+      mkdirSync(target);
+      symlinkSync(outside, join(target, 'specs'));
+      writeFileSync(join(target, 'decisions'), 'file');
+      writeFileSync(join(outside, 'real.md'), 'real');
+      symlinkSync(join(outside, 'real.md'), join(target, 'project.md'));
+      const entries = await seed(target);
+      const st = (p: string): string | undefined => entries.find((e) => e.path === p)?.status;
+      expect(st('specs/README.md')).toBe('skipped');
+      expect(st('decisions/README.md')).toBe('skipped');
+      expect(st('project.md')).toBe('skipped');
+      expect(readdirSync(outside)).toEqual(['real.md']);
+      expect(readFileSync(join(target, 'decisions'), 'utf8')).toBe('file');
+      expect(lstatSync(join(target, 'project.md')).isSymbolicLink()).toBe(true);
+      expect(readFileSync(join(outside, 'real.md'), 'utf8')).toBe('real');
+    });
+
+    test('keeps staged user changes on a seed path', async () => {
+      mkdirSync(target);
+      git('init', '-q', '-b', 'main');
+      writeFileSync(join(target, 'a.txt'), 'a');
+      git('add', '.');
+      gitC('commit', '-qm', 'init');
+      writeFileSync(join(target, 'project.md'), 'mine');
+      git('add', 'project.md');
+      gitC('commit', '-qm', 'p');
+      git('rm', '-q', 'project.md');
+      mkdirSync(join(target, 'specs'));
+      writeFileSync(join(target, 'specs/README.md'), 'specs: user draft, not like the project file');
+      git('add', 'specs/README.md');
+      rmSync(join(target, 'specs/README.md'));
+      const status = git('status', '--porcelain');
+      const entries = await seed(target);
+      const st = (p: string): string | undefined => entries.find((e) => e.path === p)?.status;
+      expect(st('specs/README.md')).toBe('skipped');
+      expect(st('project.md')).toBe('skipped');
+      expect(git('diff', '--cached', '--name-only')).toContain('specs/README.md');
+      expect(git('show', ':specs/README.md')).toBe('specs: user draft, not like the project file');
+      expect(existsSync(join(target, 'specs/README.md'))).toBe(false);
+      expect(git('status', '--porcelain')).toContain('D  project.md');
+      expect(git('status', '--porcelain').split('\n').filter((l) => l.includes('project.md') || l.includes('specs'))).toEqual(
+        status.split('\n').filter((l) => l.includes('project.md') || l.includes('specs')),
+      );
+    });
+
+    test('a failed commit leaves no seed files behind', async () => {
+      mkdirSync(target);
+      git('init', '-q', '-b', 'main');
+      writeFileSync(join(target, 'a.txt'), 'a');
+      git('add', '.');
+      gitC('commit', '-qm', 'init');
+      const hook = join(target, '.git/hooks/pre-commit');
+      mkdirSync(join(target, '.git/hooks'), { recursive: true });
+      writeFileSync(hook, '#!/bin/sh\nexit 1\n');
+      chmodSync(hook, 0o755);
+      const status = git('status', '--porcelain');
+      await expect(seed(target)).rejects.toThrow();
+      for (const f of seedRels()) expect(existsSync(join(target, f)), f).toBe(false);
+      expect(git('status', '--porcelain')).toBe(status);
+      expect(git('diff', '--cached', '--name-only')).toBe('');
+      rmSync(hook);
+      const head = git('rev-parse', 'HEAD');
+      await seed(target);
+      expect(git('rev-list', '--count', `${head}..HEAD`)).toBe('1');
+      expect(git('show', '--name-only', '--format=', 'HEAD').split('\n').sort()).toEqual(seedRels());
+    });
+
+    test('inherited GIT_DIR does not redirect git', async () => {
+      const other = join(parent, 'other');
+      mkdirSync(other);
+      execFileSync('git', ['-C', other, 'init', '-q', '-b', 'main']);
+      execFileSync('git', ['-C', other, '-c', 'user.name=S', '-c', 'user.email=s@x', '-c', 'commit.gpgsign=false', 'commit', '-q', '--allow-empty', '-m', 'o']);
+      const otherHead = execFileSync('git', ['-C', other, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
+      process.env.GIT_DIR = join(other, '.git');
+      try {
+        await seed(target);
+      } finally {
+        delete process.env.GIT_DIR;
+      }
+      expect(existsSync(join(target, '.git'))).toBe(true);
+      expect(git('log', '--format=%s')).toBe('seed: Hive context repo');
+      expect(execFileSync('git', ['-C', other, 'rev-parse', 'HEAD'], { encoding: 'utf8' })).toBe(otherHead);
+    });
   });
 });
