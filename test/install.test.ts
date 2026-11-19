@@ -461,7 +461,7 @@ describe('tiers', () => {
     fakes();
     return envFor([[URL_, remote]]);
   };
-  const guard = (): string => `node ${join(home, '.hive/bin/guard.mjs')}`;
+  const guard = (): string => `node '${join(home, '.hive/bin/guard.mjs')}'`;
 
   test('install writes every tier file, copies the guard, excludes the new files', async () => {
     await install(URL_, mkIo(setup()));
@@ -487,20 +487,20 @@ describe('tiers', () => {
     expect(read('AGENTS.md')).not.toMatch(/opus|sonnet|haiku|gpt-|claude|codex|fable|astra/i);
   });
 
-  test('existing settings and hooks survive; model kept; no duplicate on re-run', async () => {
+  test('existing settings and hooks survive; brain model pinned; no duplicate on re-run', async () => {
     const env = setup();
     mkdirSync(join(project, '.claude'));
     writeFileSync(join(project, '.claude/settings.local.json'), JSON.stringify({ permissions: { allow: ['a'] }, model: 'fable', hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'foreign' }] }] } }));
     mkdirSync(join(project, '.codex'));
-    writeFileSync(join(project, '.codex/config.toml'), 'model = "mine"\n[x]\n');
+    writeFileSync(join(project, '.codex/config.toml'), 'model = "gpt-6.1-terra"\n[x]\n');
     writeFileSync(join(project, '.codex/hooks.json'), JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'z', hooks: [] }] } }));
     await install(URL_, mkIo(env));
     await install(URL_, mkIo(env));
     const s = JSON.parse(read('.claude/settings.local.json')) as { permissions: unknown; model: string; hooks: { PreToolUse: unknown[] } };
     expect(s.permissions).toEqual({ allow: ['a'] });
-    expect(s.model).toBe('fable');
+    expect(s.model).toBe('opus');
     expect(s.hooks.PreToolUse).toHaveLength(2);
-    expect(read('.codex/config.toml')).toBe('model = "mine"\n[x]\n');
+    expect(read('.codex/config.toml')).toBe('model = "gpt-6.2-sol"\n[x]\n');
     expect((JSON.parse(read('.codex/hooks.json')) as { hooks: { PreToolUse: unknown[] } }).hooks.PreToolUse).toHaveLength(2);
   });
 
@@ -520,12 +520,20 @@ describe('tiers', () => {
 
   test('a user guard in ~/.claude/settings.json means no Hive Claude hook', async () => {
     const env = setup();
-    writeFileSync(join(home, '.claude/settings.json'), JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: '~/.claude/hooks/brain-hands-guard.sh' }] }] } }));
+    writeFileSync(join(home, '.claude/settings.json'), JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Edit|Write|Bash', hooks: [{ type: 'command', command: '~/.claude/hooks/brain-hands-guard.sh' }] }] } }));
     await install(URL_, mkIo(env));
     expect(read('.claude/settings.local.json')).not.toContain('hooks');
     expect(read('.claude/settings.local.json')).toContain('"model": "opus"');
     expect(lines).toContain('Claude: your own guard is active; Hive guard not added');
-    expect(read('.codex/hooks.json')).toContain('guard.mjs codex');
+    expect(read('.codex/hooks.json')).toContain("guard.mjs' codex");
+  });
+
+  test('a Bash-only user hook named guard does not count', async () => {
+    const env = setup();
+    writeFileSync(join(home, '.claude/settings.json'), JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'my-guard.sh' }] }] } }));
+    await install(URL_, mkIo(env));
+    expect(read('.claude/settings.local.json')).toContain('guard.mjs');
+    expect(lines).not.toContain('Claude: your own guard is active; Hive guard not added');
   });
 
   test('a symlinked .codex dir is skipped', async () => {

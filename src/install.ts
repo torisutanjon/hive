@@ -234,13 +234,27 @@ export async function projectRoot(cwd: string, env: NodeJS.ProcessEnv): Promise<
   }
 }
 
-// A guard of the user's own: any PreToolUse command naming a guard that is not Hive's.
+// A guard of the user's own: a PreToolUse entry that covers Edit or Write and runs a command naming a guard that is not Hive's.
 async function hasUserGuard(home: string): Promise<boolean> {
+  type Entry = { matcher?: unknown; hooks?: unknown };
+  const covers = (m: unknown): boolean => {
+    if (m === undefined || m === '' || m === '*') return true;
+    try {
+      return typeof m === 'string' && ['Edit', 'Write'].some((t) => new RegExp(m).test(t));
+    } catch {
+      return false;
+    }
+  };
   try {
     const cfg: unknown = JSON.parse(await readFile(join(home, '.claude', 'settings.json'), 'utf8'));
     const pre = (cfg as { hooks?: { PreToolUse?: unknown } } | null)?.hooks?.PreToolUse;
     if (!Array.isArray(pre)) return false;
-    return pre.some((e: { hooks?: unknown }) => Array.isArray(e?.hooks) && e.hooks.some((h: { command?: unknown }) => typeof h?.command === 'string' && h.command.includes('guard') && !h.command.includes('.hive/bin/guard.mjs')));
+    return pre.some(
+      (e: Entry) =>
+        covers(e?.matcher) &&
+        Array.isArray(e.hooks) &&
+        e.hooks.some((h: { command?: unknown }) => typeof h?.command === 'string' && h.command.includes('guard') && !h.command.includes('.hive/bin/guard.mjs')),
+    );
   } catch {
     return false;
   }

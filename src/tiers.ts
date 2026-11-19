@@ -13,7 +13,7 @@ const LANE = `You are a hand: the brain plans, you execute.
 - Report what changed and the real output of the verification you ran.
 - If the spec is wrong, ambiguous or blocked, stop and say so. Do not improvise.`;
 
-const DESC: Record<'careful' | 'mechanical', string> = {
+export const DESC: Record<'careful' | 'mechanical', string> = {
   careful: 'Careful hands: implements a designed change, writes tests, fixes a diagnosed bug. Receives a fully specified task from the brain.',
   mechanical: 'Mechanical hands: renames, pattern edits, boilerplate, running commands and reporting output. Receives a fully specified task from the brain.',
 };
@@ -57,7 +57,7 @@ const addGuard = (o: Obj, matcher: string, command: string): boolean => {
 
 const claudeAgent = (tier: 'careful' | 'mechanical', model: string): FileSpec => ({
   rel: `.claude/agents/hands-${tier}.md`,
-  next: () => `---\nname: hands-${tier}\ndescription: ${DESC[tier]}\nmodel: ${model}\n---\n\n${LANE}\n`,
+  next: () => `---\nname: hands-${tier}\ndescription: ${JSON.stringify(DESC[tier])}\nmodel: ${model}\n---\n\n${LANE}\n`,
   owned: (cur) => cur.startsWith('---\nname: hands-'),
 });
 
@@ -67,12 +67,18 @@ const codexAgent = (tier: 'careful' | 'mechanical', model: string): FileSpec => 
   owned: (cur) => cur.includes('# hive:'),
 });
 
-const hasTopModel = (toml: string): boolean => {
-  for (const l of toml.split('\n')) {
-    if (/^\s*\[/.test(l)) return false;
-    if (/^\s*model\s*=/.test(l)) return true;
+// Pins the brain model: replaces a top-level `model =` line (before the first table), else prepends one.
+const pinModel = (toml: string, model: string): string => {
+  const line = `model = "${model}"`;
+  const lines = toml.split('\n');
+  for (const [i, l] of lines.entries()) {
+    if (/^\s*\[/.test(l)) break;
+    if (/^\s*model\s*=/.test(l)) {
+      lines[i] = line;
+      return lines.join('\n');
+    }
   }
-  return false;
+  return `${line}\n${toml}`;
 };
 
 // ponytail: Codex slugs are pinned per release; a new Hive release updates them
@@ -89,7 +95,7 @@ export const PROVIDERS: Provider[] = [
         next: (cur) =>
           jsonMerge(cur, (o) => {
             let changed = false;
-            if (!('model' in o)) [o.model, changed] = ['opus', true];
+            if (o.model !== 'opus') [o.model, changed] = ['opus', true];
             if (guard !== null && addGuard(o, 'Edit|Write|NotebookEdit|MultiEdit|Bash', guard)) changed = true;
             return changed;
           }),
@@ -104,7 +110,7 @@ export const PROVIDERS: Provider[] = [
     files: ({ guard }) => [
       codexAgent('careful', 'gpt-6.1-terra'),
       codexAgent('mechanical', 'gpt-6-luna'),
-      { rel: '.codex/config.toml', next: (cur) => (hasTopModel(cur) ? cur : `model = "gpt-6.2-sol"\n${cur}`) },
+      { rel: '.codex/config.toml', next: (cur) => pinModel(cur, 'gpt-6.2-sol') },
       ...(guard === null
         ? []
         : [{ rel: '.codex/hooks.json', next: (cur: string) => jsonMerge(cur, (o) => addGuard(o, '^(Bash|apply_patch)$', guard)), owned: validJson }]),
@@ -112,8 +118,10 @@ export const PROVIDERS: Provider[] = [
   },
 ];
 
+const sh = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
+
 export function guardCommand(p: Provider, home: string): string {
   const path = join(home, '.hive', 'bin', 'guard.mjs');
   const hands = p.id === 'claude' ? HANDS.join(',') : `${p.models.careful},${p.models.mechanical}`;
-  return `node ${/\s/.test(path) ? `"${path}"` : path} ${p.id} ${hands}`;
+  return `node ${sh(path)} ${p.id} ${hands}`;
 }
