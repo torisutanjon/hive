@@ -99,6 +99,13 @@ describe('sync with origin', () => {
     expect(existsSync(join(A, '.git', 'rebase-apply'))).toBe(false);
   });
 
+  test('shared reports whether there is an origin', async () => {
+    expect(await a.shared()).toBe(true);
+    const d = join(tmp, 'plain');
+    run(tmp, 'init', '-q', d);
+    expect(await createRepo(d).shared()).toBe(false);
+  });
+
   test('refresh pulls other clones changes', async () => {
     await b.write('z.md', 'z\n', 'm', bob);
     await a.refresh();

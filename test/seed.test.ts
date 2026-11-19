@@ -118,6 +118,9 @@ describe('seed', () => {
     expect(r.indexOf('state: claimed')).toBeLessThan(create);
     expect(r.indexOf('explicit yes')).toBeGreaterThanOrEqual(0);
     expect(r.indexOf('explicit yes')).toBeLessThan(create);
+    expect(() => render(rb, { item: '007' })).toThrow(/does not match/);
+    for (const t of ['hive_whoami', 'shared', 'curl -sS -H @-', 'state: declined', 'state: closed', 'Rollbar item 42', '--search']) expect(r).toContain(t);
+    expect(r).not.toContain('X-Rollbar-Access-Token: $ROLLBAR_READ_TOKEN');
     expect(r.indexOf('hive_new_ticket')).toBeGreaterThanOrEqual(0);
     expect(r.lastIndexOf('explicit yes')).toBeLessThan(r.indexOf('hive_new_ticket'));
   });

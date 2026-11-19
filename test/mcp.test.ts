@@ -64,7 +64,7 @@ test('with token: hive_whoami returns the caller', async () => {
     const result = await client.callTool({ name: 'hive_whoami', arguments: {} });
     const first = (result.content as { type: string; text: string }[])[0];
     expect(first?.type).toBe('text');
-    expect(JSON.parse(first?.text ?? '')).toEqual({ name: 'Ada', email: 'ada@example.com' });
+    expect(JSON.parse(first?.text ?? '')).toEqual({ name: 'Ada', email: 'ada@example.com', shared: false });
   } finally {
     await client.close();
   }
@@ -197,7 +197,7 @@ test('history, limit validation, revert', async () => {
     message: string;
   }[];
   expect(h[0]?.message).toBe('add h');
-  expect(h[0]?.author).toEqual({ name: 'Ada', email: 'ada@example.com' });
+  expect(h[0]?.author).toEqual({ name: 'Ada', email: 'ada@example.com', shared: false });
   expect(h[0]?.commit).toMatch(/^[0-9a-f]{40}$/);
   expect(isNaN(Date.parse(h[0]?.date ?? ''))).toBe(false);
 
