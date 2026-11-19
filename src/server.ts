@@ -32,6 +32,7 @@ export function createHiveServer(config: Config): Server {
     }
     let workflows;
     try {
+      await repo.refresh();
       workflows = await loadWorkflows(config.contextDir);
     } catch {
       res.writeHead(500, { 'Content-Type': 'application/json' });

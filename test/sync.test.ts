@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
-import { createRepo, type Repo } from '../src/repo.ts';
+import { checkOrigin, createRepo, type Repo } from '../src/repo.ts';
 
 const ada = { name: 'Ada', email: 'ada@example.com' };
 const bob = { name: 'Bob', email: 'bob@example.com' };
@@ -89,5 +89,32 @@ describe('sync with origin', () => {
     await b.write('z.md', 'z\n', 'm', bob);
     await a.refresh();
     expect(existsSync(join(A, 'z.md'))).toBe(true);
+  });
+
+  test('default TTL skips a second pull', async () => {
+    const c = createRepo(A);
+    await b.write('z1.md', '1\n', 'm', bob);
+    await c.refresh();
+    expect(existsSync(join(A, 'z1.md'))).toBe(true);
+    await b.write('z2.md', '2\n', 'm', bob);
+    await c.refresh();
+    expect(existsSync(join(A, 'z2.md'))).toBe(false);
+  });
+});
+
+describe('checkOrigin', () => {
+  test('reachable origin', async () => {
+    expect(await checkOrigin(A)).toBeNull();
+  });
+
+  test('no remote', async () => {
+    const d = join(tmp, 'plain');
+    run(tmp, 'init', '-q', d);
+    expect(await checkOrigin(d)).toBeNull();
+  });
+
+  test('unreachable origin', async () => {
+    run(A, 'remote', 'set-url', 'origin', join(tmp, 'nope.git'));
+    expect(await checkOrigin(A)).toMatch(/cannot reach/);
   });
 });

@@ -23,6 +23,27 @@ export type Repo = {
   newTicket(key: string, title: string, author: Developer): Promise<TicketResult>;
 };
 
+const gitEnv = (): NodeJS.ProcessEnv => ({
+  ...process.env,
+  GIT_TERMINAL_PROMPT: '0',
+  GIT_LITERAL_PATHSPECS: '1',
+  GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND ?? 'ssh -o BatchMode=yes',
+});
+
+export async function checkOrigin(root: string): Promise<string | null> {
+  try {
+    await exec('git', ['remote', 'get-url', 'origin'], { cwd: root, env: gitEnv() });
+  } catch {
+    return null;
+  }
+  try {
+    await exec('git', ['ls-remote', '--heads', 'origin'], { cwd: root, env: gitEnv() });
+    return null;
+  } catch {
+    return "cannot reach the context repo's origin; check the remote URL and your SSH key";
+  }
+}
+
 const code = (e: unknown): string | number | undefined => (e as { code?: string | number }).code;
 
 export function createRepo(root: string, opts: RepoOptions = {}): Repo {
@@ -38,12 +59,7 @@ export function createRepo(root: string, opts: RepoOptions = {}): Repo {
       await exec(
         'git',
         ['-c', 'user.name=Hive', '-c', 'user.email=hive@localhost', '-c', 'commit.gpgsign=false', ...args],
-        { cwd: root, env: {
-          ...process.env,
-          GIT_TERMINAL_PROMPT: '0',
-          GIT_LITERAL_PATHSPECS: '1',
-          GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND ?? 'ssh -o BatchMode=yes',
-        }, },
+        { cwd: root, env: gitEnv() },
       )
     ).stdout;
 
