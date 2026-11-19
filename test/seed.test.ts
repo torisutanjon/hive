@@ -29,7 +29,7 @@ describe('seed', () => {
     await seed(target);
     const files = [
       'project.md',
-      ...['start', 'new', 'work', 'end', 'start-ticket', 'review-pr', 'ci', 'new-issue'].map((n) => `workflow/${n}.md`),
+      ...['start', 'new', 'work', 'end', 'start-ticket', 'review-pr', 'ci', 'new-issue', 'new-jira', 'moved'].map((n) => `workflow/${n}.md`),
       ...['tickets', 'specs', 'decisions', 'sessions'].map((d) => `${d}/README.md`),
     ];
     for (const f of files) expect(existsSync(join(target, f)), f).toBe(true);
@@ -41,14 +41,15 @@ describe('seed', () => {
   test('workflows load', async () => {
     await seed(target);
     const w = await loadWorkflows(target);
-    expect(w.valid.map((x) => x.name).sort()).toEqual(['ci', 'end', 'new', 'new-issue', 'review-pr', 'start', 'start-ticket', 'work']);
+    expect(w.valid.map((x) => x.name).sort()).toEqual(['ci', 'end', 'moved', 'new', 'new-issue', 'new-jira', 'review-pr', 'start', 'start-ticket', 'work']);
     expect(w.invalid).toEqual([]);
   });
 
   test('no leftover placeholders', async () => {
     await seed(target);
+    const fill: Record<string, string> = { key: 'HIVE-1', branch: 'x', number: '1' };
     for (const wf of (await loadWorkflows(target)).valid) {
-      const out = render(wf, Object.fromEntries(wf.arguments.map((a) => [a.name, a.name === 'number' ? '1' : 'X'])));
+      const out = render(wf, Object.fromEntries(wf.arguments.map((a) => [a.name, fill[a.name] ?? 'X'])));
       expect(out, wf.name).not.toContain('{{');
     }
   });
@@ -102,6 +103,28 @@ describe('seed', () => {
     }
     expect(render(issue, args)).toContain('Never put the title into a shell command');
     expect(readFileSync(join(target, 'project.md'), 'utf8')).toContain('github_repo');
+  });
+
+  test('jira tracker', async () => {
+    await seed(target);
+    const [newJira, moved, work, startTicket] = [await wf('new-jira'), await wf('moved'), await wf('work'), await wf('start-ticket')];
+    expect(() => render(newJira, { key: 'ax-1' })).toThrow(/does not match/);
+    expect(() => render(moved, { key: '../x' })).toThrow(/does not match/);
+    expect(() => render(work, { key: 'X' })).toThrow(/does not match/);
+    expect(() => render(startTicket, { key: 'HIVE-1/../../x' })).toThrow(/does not match/);
+    const nj = render(newJira, { key: 'AX-12' });
+    expect(nj).toContain('tickets/AX-12.md');
+    expect(nj).toContain('JIRA:SYNC:START');
+    expect(nj.indexOf('explicit yes')).toBeGreaterThanOrEqual(0);
+    expect(nj.indexOf('hive_write')).toBeGreaterThanOrEqual(0);
+    expect(nj.indexOf('explicit yes')).toBeLessThan(nj.indexOf('hive_write'));
+    const start = render(await wf('start'), {});
+    expect(start).toContain('MOVE THESE IN JIRA');
+    expect(start).toContain('assignee');
+    expect(render(work, { key: 'AX-12' })).toContain('jira_reconcile: pending');
+    expect(render(moved, { key: 'AX-12' })).toContain('jira_reconcile');
+    expect(render(await wf('new'), { title: 't' })).toContain('new-jira');
+    expect(readFileSync(join(target, 'project.md'), 'utf8')).toContain('tracker: hive');
   });
 
   test('config accepts the seeded dir', async () => {
