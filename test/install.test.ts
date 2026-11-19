@@ -1,9 +1,11 @@
 import { execFileSync } from 'node:child_process';
 import { chmodSync, readdirSync, symlinkSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadConfig } from '../src/config.ts';
+import { PROVIDERS } from '../src/tiers.ts';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { ensureClone, ensureContext, freePort, install, parseSshUrl, readHiveConfig, registerClaude, registerCodex, serverName, startEnv, upsertBlock, upsertCodexTable, writeHiveConfig, writeProjectFiles, type Io } from '../src/install.ts';
 
@@ -446,5 +448,127 @@ describe('install', () => {
     expect(startEnv(cfg, project, { PORT: '5555' }).PORT).toBe('5555');
     expect(loadConfig(se).ticketKey).toBe('ACME');
     expect(() => startEnv(cfg, join(root, 'elsewhere'), {})).toThrow('not set up here: run npx hive-collab-context <ssh-url> first');
+  });
+});
+
+describe('tiers', () => {
+  const read = (f: string): string => readFileSync(join(project, f), 'utf8');
+  const exclude = (): string[] => read('.git/info/exclude').split('\n');
+  const TIER_FILES = ['.claude/agents/hands-careful.md', '.claude/agents/hands-mechanical.md', '.claude/settings.local.json', '.codex/agents/hands-careful.toml', '.codex/agents/hands-mechanical.toml', '.codex/config.toml', '.codex/hooks.json'];
+  const setup = (): NodeJS.ProcessEnv => {
+    mkdirSync(join(home, '.claude'));
+    mkdirSync(join(home, '.codex'));
+    fakes();
+    return envFor([[URL_, remote]]);
+  };
+  const guard = (): string => `node '${join(home, '.hive/bin/guard.mjs')}'`;
+
+  test('install writes every tier file, copies the guard, excludes the new files', async () => {
+    await install(URL_, mkIo(setup()));
+    for (const f of TIER_FILES) expect(existsSync(join(project, f)), f).toBe(true);
+    for (const f of TIER_FILES) expect(exclude().filter((l) => l === `/${f}`), f).toHaveLength(1);
+    expect(statSync(join(home, '.hive/bin')).mode & 0o777).toBe(0o700);
+    expect(statSync(join(home, '.hive/bin/guard.mjs')).mode & 0o777).toBe(0o755);
+    expect(read('.claude/agents/hands-careful.md')).toContain('model: sonnet');
+    expect(read('.claude/settings.local.json')).toContain(`${guard()} claude hands-careful,hands-mechanical`);
+    expect(read('.codex/hooks.json')).toContain(`${guard()} codex gpt-6.1-terra,gpt-6-luna`);
+    expect(read('.codex/config.toml')).toBe('model = "gpt-6.2-sol"\n');
+    expect(lines).toContain('Codex: run /hooks once in this project to trust the Hive guard');
+    expect(run(project, 'status', '--porcelain')).toBe('');
+    const before = TIER_FILES.map(read);
+    await install(URL_, mkIo(envFor([[URL_, remote]])));
+    expect(TIER_FILES.map(read)).toEqual(before);
+  });
+
+  test('AGENTS.md has tier rules and no model or provider names', async () => {
+    await install(URL_, mkIo(setup()));
+    expect(read('AGENTS.md')).toMatch(/careful hands/i);
+    expect(read('AGENTS.md')).not.toContain('HIVE-018');
+    expect(read('AGENTS.md')).not.toMatch(/opus|sonnet|haiku|gpt-|claude|codex|fable|astra/i);
+  });
+
+  test('existing settings and hooks survive; brain model pinned; no duplicate on re-run', async () => {
+    const env = setup();
+    mkdirSync(join(project, '.claude'));
+    writeFileSync(join(project, '.claude/settings.local.json'), JSON.stringify({ permissions: { allow: ['a'] }, model: 'fable', hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'foreign' }] }] } }));
+    mkdirSync(join(project, '.codex'));
+    writeFileSync(join(project, '.codex/config.toml'), 'model = "gpt-6.1-terra"\n[x]\n');
+    writeFileSync(join(project, '.codex/hooks.json'), JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'z', hooks: [] }] } }));
+    await install(URL_, mkIo(env));
+    await install(URL_, mkIo(env));
+    const s = JSON.parse(read('.claude/settings.local.json')) as { permissions: unknown; model: string; hooks: { PreToolUse: unknown[] } };
+    expect(s.permissions).toEqual({ allow: ['a'] });
+    expect(s.model).toBe('opus');
+    expect(s.hooks.PreToolUse).toHaveLength(2);
+    expect(read('.codex/config.toml')).toBe('model = "gpt-6.2-sol"\n[x]\n');
+    expect((JSON.parse(read('.codex/hooks.json')) as { hooks: { PreToolUse: unknown[] } }).hooks.PreToolUse).toHaveLength(2);
+  });
+
+  test('tracked settings.local.json is not excluded; invalid JSON is left alone and logged', async () => {
+    const env = setup();
+    mkdirSync(join(project, '.claude'));
+    writeFileSync(join(project, '.claude/settings.local.json'), '{"model": "mine"}');
+    run(project, 'add', '-f', '.claude/settings.local.json');
+    run(project, 'commit', '-qm', 's');
+    mkdirSync(join(project, '.codex'));
+    writeFileSync(join(project, '.codex/hooks.json'), '{broken');
+    await install(URL_, mkIo(env));
+    expect(exclude()).not.toContain('/.claude/settings.local.json');
+    expect(read('.codex/hooks.json')).toBe('{broken');
+    expect(lines).toContain('kept .codex/hooks.json: not written by Hive');
+  });
+
+  test('a user guard in ~/.claude/settings.json means no Hive Claude hook', async () => {
+    const env = setup();
+    writeFileSync(join(home, '.claude/settings.json'), JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Edit|Write|Bash', hooks: [{ type: 'command', command: '~/.claude/hooks/brain-hands-guard.sh' }] }] } }));
+    await install(URL_, mkIo(env));
+    expect(read('.claude/settings.local.json')).not.toContain('hooks');
+    expect(read('.claude/settings.local.json')).toContain('"model": "opus"');
+    expect(lines).toContain('Claude: your own guard is active; Hive guard not added');
+    expect(read('.codex/hooks.json')).toContain("guard.mjs' codex");
+  });
+
+  test('a Bash-only user hook named guard does not count', async () => {
+    const env = setup();
+    writeFileSync(join(home, '.claude/settings.json'), JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'my-guard.sh' }] }] } }));
+    await install(URL_, mkIo(env));
+    expect(read('.claude/settings.local.json')).toContain('guard.mjs');
+    expect(lines).not.toContain('Claude: your own guard is active; Hive guard not added');
+  });
+
+  test('a symlinked .codex dir is skipped', async () => {
+    const env = setup();
+    const out = join(root, 'codexout');
+    mkdirSync(out);
+    symlinkSync(out, join(project, '.codex'));
+    await install(URL_, mkIo(env));
+    expect(readdirSync(out)).toEqual([]);
+    expect(lines).toContain('skipped .codex/agents/hands-careful.toml: symlink or not a regular file');
+    expect(existsSync(join(project, '.claude/agents/hands-careful.md'))).toBe(true);
+  });
+
+  test('the context repo is untouched by a re-run that writes tier files', async () => {
+    const env = setup();
+    await install(URL_, mkIo(env));
+    const ctx = join(home, '.hive/acme/ctx');
+    const snap = (): string[] => [
+      run(ctx, 'rev-parse', 'HEAD'),
+      run(ctx, 'status', '--porcelain'),
+      ...readdirSync(ctx, { recursive: true, withFileTypes: true })
+        .filter((d) => d.isFile() && !join(d.parentPath, d.name).includes('/.git/'))
+        .map((d) => join(d.parentPath, d.name))
+        .sort()
+        .map((f) => `${f} ${createHash('sha256').update(readFileSync(f)).digest('hex')}`),
+    ];
+    const before = snap();
+    rmSync(join(project, '.claude/agents'), { recursive: true });
+    rmSync(join(project, '.codex'), { recursive: true });
+    await install(URL_, mkIo(env));
+    expect(existsSync(join(project, '.codex/hooks.json'))).toBe(true);
+    expect(snap()).toEqual(before);
+  });
+
+  test('providers are only those detected', () => {
+    expect(PROVIDERS.map((p) => p.id)).toEqual(['claude', 'codex']);
   });
 });

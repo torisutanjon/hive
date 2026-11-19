@@ -1,12 +1,13 @@
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { chmod, lstat, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, lstat, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { readTicketKey } from './config.ts';
 import { seed } from './seed.ts';
+import { guardCommand, PROVIDERS, TIER_RULES, type FileSpec } from './tiers.ts';
 
 const exec = promisify(execFile);
 
@@ -156,7 +157,7 @@ Shared project context (tickets, specs, decisions, sessions) lives in Hive, MCP 
 - End a session: \`hive_workflow\` with name \`end\`.
 
 ### Tier rules
-<!-- HIVE-018 -->
+${TIER_RULES}
 ${END}`;
 
 const STUB_ARGS: Record<string, string> = { new: ' and {"title": "$ARGUMENTS"}', work: ' and {"key": "$ARGUMENTS"}' };
@@ -176,10 +177,11 @@ async function safeToWrite(root: string, rel: string): Promise<boolean> {
   return true;
 }
 
-export async function writeProjectFiles(root: string, name: string, env: NodeJS.ProcessEnv): Promise<string[]> {
+export async function writeProjectFiles(root: string, name: string, env: NodeJS.ProcessEnv, extra: FileSpec[] = []): Promise<string[]> {
   const out: string[] = [];
   const created: string[] = [];
   const owned: string[] = [];
+  const written: string[] = [];
   const put = async (rel: string, next: (cur: string) => string, ours?: (cur: string) => boolean): Promise<boolean> => {
     if (!(await safeToWrite(root, rel))) {
       out.push(`skipped ${rel}: symlink or not a regular file`);
@@ -192,8 +194,11 @@ export async function writeProjectFiles(root: string, name: string, env: NodeJS.
       return false;
     }
     if (cur === null) created.push(rel);
+    const text = next(cur ?? '');
+    if (text === cur) return true;
     await mkdir(dirname(file), { recursive: true });
-    await writeFile(file, next(cur ?? ''));
+    await writeFile(file, text);
+    written.push(rel);
     return true;
   };
   const tracked = (rel: string): Promise<boolean> => git(['ls-files', '--error-unmatch', '--', rel], root, env).then(() => true, () => false);
@@ -204,8 +209,9 @@ export async function writeProjectFiles(root: string, name: string, env: NodeJS.
     const text = `${STUB_MARK} of the \`${name}\` MCP server with name \`${w}\`${STUB_ARGS[w] ?? ''}, then follow the returned instructions.\n`;
     if (await put(rel, () => text, (cur) => cur.startsWith(STUB_MARK))) owned.push(rel);
   }
+  for (const x of extra) await put(x.rel, x.next, x.owned);
   const untracked: string[] = [];
-  for (const rel of new Set([...created, ...owned])) if (!(await tracked(rel))) untracked.push(rel);
+  for (const rel of new Set([...created, ...owned, ...extra.map((x) => x.rel).filter((r) => written.includes(r))])) if (!(await tracked(rel))) untracked.push(rel);
   if (untracked.length) {
     const file = resolve(root, await git(['rev-parse', '--git-path', 'info/exclude'], root, env));
     const cur = await readFile(file, 'utf8').catch(() => '');
@@ -225,6 +231,32 @@ export async function projectRoot(cwd: string, env: NodeJS.ProcessEnv): Promise<
     return await git(['rev-parse', '--show-toplevel'], cwd, env);
   } catch {
     throw new Error('not a git repository: run this at the root of your project');
+  }
+}
+
+// A guard of the user's own: a PreToolUse entry that covers Edit or Write and runs a command naming a guard that is not Hive's.
+async function hasUserGuard(home: string): Promise<boolean> {
+  type Entry = { matcher?: unknown; hooks?: unknown };
+  const covers = (m: unknown): boolean => {
+    if (m === undefined || m === '' || m === '*') return true;
+    try {
+      return typeof m === 'string' && ['Edit', 'Write'].some((t) => new RegExp(m).test(t));
+    } catch {
+      return false;
+    }
+  };
+  try {
+    const cfg: unknown = JSON.parse(await readFile(join(home, '.claude', 'settings.json'), 'utf8'));
+    const pre = (cfg as { hooks?: { PreToolUse?: unknown } } | null)?.hooks?.PreToolUse;
+    if (!Array.isArray(pre)) return false;
+    return pre.some(
+      (e: Entry) =>
+        covers(e?.matcher) &&
+        Array.isArray(e.hooks) &&
+        e.hooks.some((h: { command?: unknown }) => typeof h?.command === 'string' && h.command.includes('guard') && !h.command.includes('.hive/bin/guard.mjs')),
+    );
+  } catch {
+    return false;
   }
 }
 
@@ -267,7 +299,23 @@ export async function install(url: string, io: Io): Promise<void> {
   await attempt('Claude Code', () => registerClaude(io, root, name, mcp, ctx.token));
   await attempt('Codex', () => registerCodex(io, name, mcp, ctx.token));
   io.log(`Other MCP clients: ${mcp} with header Authorization: Bearer <token from ~/.hive/config.json>`);
-  for (const line of await writeProjectFiles(root, name, io.env)) io.log(line);
+  const providers = PROVIDERS.filter((p) => p.detect(io.home));
+  const extra: FileSpec[] = [];
+  if (providers.length) {
+    const bin = join(io.home, '.hive', 'bin');
+    await mkdir(bin, { recursive: true, mode: 0o700 });
+    await chmod(bin, 0o700);
+    await copyFile(new URL('../hooks/guard.mjs', import.meta.url), join(bin, 'guard.mjs'));
+    await chmod(join(bin, 'guard.mjs'), 0o755);
+    const own = await hasUserGuard(io.home);
+    for (const p of providers) {
+      const skip = p.id === 'claude' && own;
+      if (skip) io.log('Claude: your own guard is active; Hive guard not added');
+      extra.push(...p.files({ home: io.home, guard: skip ? null : guardCommand(p, io.home) }));
+      if (p.id === 'codex') io.log('Codex: run /hooks once in this project to trust the Hive guard');
+    }
+  }
+  for (const line of await writeProjectFiles(root, name, io.env, extra)) io.log(line);
   io.log('Start Hive: npx hive-collab-context start');
   if (failed) throw new Error('some agents need repair: see above');
 }
