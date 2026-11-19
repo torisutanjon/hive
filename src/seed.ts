@@ -1,9 +1,10 @@
 import { execFile } from 'node:child_process';
 import { constants } from 'node:fs';
-import { copyFile, lstat, mkdir, readdir, realpath, rm, stat } from 'node:fs/promises';
+import { copyFile, lstat, mkdir, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
+import { parseArgs, promisify } from 'node:util';
+import { KEY } from './config.ts';
 
 const exec = promisify(execFile);
 const SEED_DIR = fileURLToPath(new URL('../seed', import.meta.url));
@@ -24,7 +25,7 @@ async function seedFiles(): Promise<string[]> {
 }
 
 // Copy one seed file into dir unless anything is in the way. Never overwrite, never follow a symlink.
-async function place(dir: string, rel: string, skip: (rel: string) => boolean): Promise<SeedEntry['status']> {
+async function place(dir: string, rel: string, skip: (rel: string) => boolean, content?: string): Promise<SeedEntry['status']> {
   if (skip(rel)) return 'skipped';
   const segs = rel.split('/');
   for (let i = 1; i < segs.length; i++) {
@@ -45,7 +46,8 @@ async function place(dir: string, rel: string, skip: (rel: string) => boolean): 
   }
   await mkdir(dirname(dst), { recursive: true });
   try {
-    await copyFile(join(SEED_DIR, ...segs), dst, constants.COPYFILE_EXCL);
+    if (content === undefined) await copyFile(join(SEED_DIR, ...segs), dst, constants.COPYFILE_EXCL);
+    else await writeFile(dst, content, { flag: 'wx' });
   } catch (e) {
     if (code(e) === 'EEXIST') return 'skipped';
     throw e;
@@ -65,8 +67,13 @@ async function isRepoRoot(dir: string, git: Git): Promise<boolean> {
   }
 }
 
-export async function seed(target: string): Promise<SeedEntry[]> {
+export async function seed(target: string, opts: { key?: string } = {}): Promise<SeedEntry[]> {
+  const { key } = opts;
+  if (key !== undefined && !KEY.test(key)) throw new Error('--key must be uppercase letters/digits starting with a letter, e.g. HIVE');
   const dir = resolve(target);
+  if (key === undefined && !(await lstat(join(dir, 'project.md')).then(() => true, (e: unknown) => (code(e) === 'ENOENT' ? false : Promise.reject(e))))) {
+    throw new Error('--key is required: the ticket key for this context repo, e.g. --key HIVE');
+  }
   await mkdir(dir, { recursive: true });
   const env: NodeJS.ProcessEnv = { ...process.env, ...GIT_ENV };
   for (const k of GIT_INHERITED) Reflect.deleteProperty(env, k);
@@ -80,7 +87,13 @@ export async function seed(target: string): Promise<SeedEntry[]> {
   }
   const skip = (rel: string): boolean => known.has(rel.toLowerCase());
   const entries: SeedEntry[] = [];
-  for (const path of await seedFiles()) entries.push({ path, status: await place(dir, path, skip) });
+  for (const path of await seedFiles()) {
+    const content =
+      path === 'project.md' && key !== undefined
+        ? (await readFile(join(SEED_DIR, path), 'utf8')).replace(/^---\n/, `---\nticket_key: ${key}\n`)
+        : undefined;
+    entries.push({ path, status: await place(dir, path, skip, content) });
+  }
   const added = entries.filter((e) => e.status === 'added').map((e) => e.path);
   if (!added.length) return entries;
   if (!root) await git(['init', '-q', '-b', 'main']);
@@ -96,12 +109,13 @@ export async function seed(target: string): Promise<SeedEntry[]> {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const target = process.argv[2];
+  const { values, positionals } = parseArgs({ args: process.argv.slice(2), options: { key: { type: 'string' } }, allowPositionals: true });
+  const target = positionals[0];
   if (!target) {
-    console.error('usage: yarn seed <dir>');
+    console.error('usage: yarn seed <dir> --key <KEY>');
     process.exit(1);
   }
-  seed(target).then(
+  seed(target, { key: values.key }).then(
     (entries) => {
       for (const e of entries) console.log(`${e.status} ${e.path}`);
       console.log(`seeded ${resolve(target)}`);
