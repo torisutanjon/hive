@@ -156,6 +156,7 @@ const ID = /^[a-z0-9][a-z0-9-]*$/;
 
 export async function addProvider(id: string, detect: string, register: string, io: Io): Promise<void> {
   if (!ID.test(id) || id === 'claude' || id === 'codex') throw new Error('provider id must be lowercase letters, digits and dashes, and not claude or codex');
+  if (!detect.startsWith('/') && !detect.startsWith('~/')) throw new Error('detect must be an absolute path or start with ~/');
   if (!register.includes('{url}')) throw new Error('register command must contain {url}');
   const cfg = await readHiveConfig(io.home);
   (cfg.providers ??= {})[id] = { detect, register };
@@ -171,7 +172,7 @@ export async function addProvider(id: string, detect: string, register: string, 
 export async function listProviders(io: Io): Promise<void> {
   const entries = Object.entries((await readHiveConfig(io.home)).providers ?? {});
   if (!entries.length) io.log('no providers added');
-  for (const [id, p] of entries) io.log(`${id}  detect ${p.detect}  register ${p.register}`);
+  for (const [id, p] of entries) io.log(`${id}  detect ${p.detect}`);
 }
 
 export async function removeProvider(id: string, io: Io): Promise<void> {
@@ -343,7 +344,15 @@ export async function install(url: string, io: Io): Promise<void> {
   };
   await attempt('Claude Code', () => registerClaude(io, root, name, mcp, ctx.token));
   await attempt('Codex', () => registerCodex(io, name, mcp, ctx.token));
-  for (const [pid, p] of Object.entries(cfg.providers ?? {})) await attempt(pid, () => runUserProvider(pid, p, root, io, mcp, ctx.token));
+  // a user's own command failing is theirs to fix: log it, but do not fail the install
+  for (const [pid, p] of Object.entries(cfg.providers ?? {})) {
+    try {
+      const line = await runUserProvider(pid, p, root, io, mcp, ctx.token);
+      if (line) io.log(line);
+    } catch (e) {
+      io.log(`${pid}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
   io.log(`Other MCP clients: ${mcp} with header Authorization: Bearer <token from ~/.hive/config.json>`);
   const providers = PROVIDERS.filter((p) => p.detect(io.home));
   const extra: FileSpec[] = [];

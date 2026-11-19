@@ -59,6 +59,13 @@ describe('provider add / list / remove', () => {
     await expect(addProvider(id, '~/.kimi', 'x {url}', mkIo())).rejects.toThrow('provider id must be lowercase letters, digits and dashes, and not claude or codex');
   });
 
+  test('add refuses a relative detect and accepts ~/ and absolute', async () => {
+    await expect(addProvider('kilo', '.kilo', 'x {url}', mkIo())).rejects.toThrow('detect must be an absolute path or start with ~/');
+    await addProvider('kilo', '~/.kilo', 'x {url}', mkIo());
+    await addProvider('abs', '/abs/x', 'x {url}', mkIo());
+    expect(Object.keys((await readHiveConfig(home)).providers ?? {})).toEqual(['kilo', 'abs']);
+  });
+
   test('add refuses a register command without {url}', async () => {
     await expect(addProvider('kimi', '~/.kimi', 'kimi mcp add', mkIo())).rejects.toThrow('register command must contain {url}');
   });
@@ -105,8 +112,12 @@ describe('provider add / list / remove', () => {
     await addProvider('kimi', '~/.kimi', 'kimi mcp add {url} --token {token}', mkIo());
     lines = [];
     await listProviders(mkIo());
-    expect(lines).toEqual(['kimi  detect ~/.kimi  register kimi mcp add {url} --token {token}']);
+    expect(lines).toEqual(['kimi  detect ~/.kimi']);
     expect(lines.join('\n')).not.toContain(TOKEN);
+    await addProvider('leaky', '~/.leaky', 'x {url} --header "Authorization: Bearer sk-secret-123"', mkIo());
+    lines = [];
+    await listProviders(mkIo());
+    expect(lines.join('\n')).not.toContain('sk-secret-123');
   });
 
   test('remove deletes, and an unknown id throws', async () => {
@@ -139,12 +150,12 @@ describe('install runs user providers', () => {
     expect(readFileSync(out, 'utf8')).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp\n$/);
   });
 
-  test('a failing register is reported by id, the rest finishes, the token never leaks', async () => {
+  test('a failing user register is reported by id, install still succeeds, the token never leaks', async () => {
     claudeCodex();
     const fake = script('bad.sh', `echo "$1" >&2; echo "$1"; exit 3`);
     await writeHiveConfig(home, { contexts: {}, projects: {}, providers: { kimi: { detect: '~/.kimi', register: `${fake} {token}` } } });
     mkdirSync(join(home, '.kimi'));
-    await expect(install(URL_, mkIo(envFor()))).rejects.toThrow(/need repair/);
+    await install(URL_, mkIo(envFor()));
     const token = (await readHiveConfig(home)).contexts['acme/ctx']?.token ?? 'x';
     expect(token).toHaveLength(64);
     expect(lines).toContain('kimi: register command failed (exit 3)');
