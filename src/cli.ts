@@ -13,9 +13,11 @@ const USAGE = `usage:
   npx hive-collab-context provider remove <id>
 `;
 
+const PROMPT = 'Context repo SSH URL (git@host:owner/repo.git): ';
+
 const [arg, ...rest] = process.argv.slice(2);
 try {
-  if (arg === undefined || arg === '--help') console.log(USAGE);
+  if (arg === '--help' || (arg === undefined && !process.stdin.isTTY)) console.log(USAGE);
   else if (arg === 'provider') {
     const io = { home: homedir(), cwd: process.cwd(), env: process.env, ask: () => Promise.resolve(''), log: (l: string) => console.log(l) };
     const { values, positionals } = parseArgs({ args: rest, allowPositionals: true, options: { detect: { type: 'string' }, register: { type: 'string' } } });
@@ -30,7 +32,8 @@ try {
   } else {
     const rl = createInterface({ input: process.stdin, output: process.stdout });
     try {
-      await install(arg, { home: homedir(), cwd: process.cwd(), env: process.env, ask: (q) => rl.question(q), log: (l) => console.log(l) });
+      const url = arg ?? (await rl.question(PROMPT)).trim();
+      await install(url, { home: homedir(), cwd: process.cwd(), env: process.env, ask: (q) => rl.question(q), log: (l) => console.log(l) });
     } finally {
       rl.close();
     }
